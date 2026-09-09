@@ -1,0 +1,16 @@
+<html>
+<head><title>Notifications slow render (synthetic test fixture)</title></head>
+<body>
+<main id="feed"></main>
+<script>
+setTimeout(() => {
+  document.getElementById("feed").innerHTML =
+    '<div class="notif"><div class="notif-main">' +
+    '<a href="/in/rita-recruiter"><img alt="View profile" src="data:,"></a>' +
+    '<div class="notif-text">Rita Recruiter <a href="/in/rita-recruiter/posts/9">viewed your profile</a> <span>2h</span></div>' +
+    '<div><div><button aria-label="More options"></button></div></div>' +
+    "</div></div>";
+}, 1500);
+</script>
+</body>
+</html>

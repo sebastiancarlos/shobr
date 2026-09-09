@@ -1,0 +1,7 @@
+{
+  "name": "beachpatrol-commands",
+  "version": "0.1.0",
+  "description": "SHOBR beachpatrol commands, to be symlinked into the beachpatrol user commands home.",
+  "type": "module",
+  "private": true
+}

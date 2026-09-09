@@ -1,0 +1,41 @@
+[project]
+name = "shobr"
+version = "0.1.0"
+description = "SHOBR: Simulate Human Occupational-Bureaucratic Rituals. A personal job search automator."
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+dependencies = [
+    "any-llm-sdk[openai]>=1.27.2",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "pyright"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+shobr = "shobr.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shobr"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+exclude = ["*.ipynb"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "N", "RUF100", "D100", "D101", "D102", "D103", "D104", "D105", "D107"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.14"
+typeCheckingMode = "basic"
+exclude = ["**/__pycache__", ".ruff_cache", ".venv"]

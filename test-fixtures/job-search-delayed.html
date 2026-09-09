@@ -1,0 +1,15 @@
+<html>
+<head><title>Job search slow render (synthetic test fixture)</title></head>
+<body>
+<main id="results"></main>
+<script>
+setTimeout(() => {
+  document.getElementById("results").innerHTML =
+    '<div componentkey="job-card-component-ref-5550000032">' +
+    "<div>Platform Engineer</div><div>Acme</div><div>Remote</div></div>" +
+    '<div componentkey="job-card-component-ref-5550000033">' +
+    "<div>Widget Designer</div><div>Globex</div><div>Testville</div></div>";
+}, 1500);
+</script>
+</body>
+</html>

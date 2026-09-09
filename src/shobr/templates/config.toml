@@ -1,0 +1,54 @@
+# shobr config:
+
+# Note: Editing filters re-screens history: So, old leads get re-judged under
+# new rules.
+
+# CV Toolchain home
+cv_toolchain_dir = "~/shobr-resumes"
+
+# beachpatrol browser profile holding the logged-in LinkedIn session.
+# The user MUST configure this.
+# beachpatrol_profile = "job-hunter"
+
+# beachpatrol browser to use.
+beachpatrol_browser = "chromium"
+
+# Job titles fed to LinkedIn search as an ORed keyword query.
+titles = ["Technical Lead", "Software Engineer", "Senior Software Engineer"]
+
+# Workplace types appended to the same search OR query.
+workplace_types = ["on-site", "hybrid", "remote"]
+
+# Geo targets, for the query, referred to BY NAME via the [geo_ids] map
+# below. An empty list searches worldwide.
+geo = ["testville-city", "testville-dept"]
+
+# Employment types rejected.
+reject_employment_type = ["Internship"]
+
+# presence-required work (on-site and hybrid) with a location acceptable for
+# the user must have its locations listed below. An empty list rejects all
+# presence-required postings. This rule exists under the assumption that the
+# user is in no possession of a teleportation device.
+presence_locations = ["testville"]
+
+# Geo name to LinkedIn geoId map, the source of truth for geo targets above.
+# Obtain ids manually: search the place on LinkedIn Jobs and copy geoId=
+# from the resulting URL. Beware precision: LinkedIn often has several ids
+# per place (city vs metro vs department), so verify the rendered location
+# matches what the name promises.
+[geo_ids]
+testville-city = "111111111"
+testville-dept = "222222222"
+
+# Reject titles which match the provided Python regex (matched in lowercase).
+[reject_title]
+golang = "\\bgolang\\b"
+devops = "\\bdevops\\b"
+java = "\\bjava\\b"
+robotics = "\\brobotics\\b"
+"c++" = "\\bc\\+\\+"
+architect = "\\barchitect\\b"
+reliability = "\\breliability\\b"
+"data engineer" = "\\bdata engineer"
+".net" = "\\.net\\b"
