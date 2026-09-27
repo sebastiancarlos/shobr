@@ -64,6 +64,24 @@ jobs:
       - name: Add beachpatrol to PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # Ubuntu apt ships pandoc 3.1.x, but the Lua filter needs >= 3.5,
+      - name: Install pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y groff poppler-utils
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install groff poppler
+
+      - name: Cache pinned roffume clone
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/shobr/roffume
+          key: roffume-v0.1.0
+
       - name: Install project and dev dependencies
         run: uv sync --locked --extra dev
 
