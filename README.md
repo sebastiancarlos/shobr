@@ -3,6 +3,8 @@
 **The stealthiest, UNIX-iest, ethical Job Search Automator, with a
 Hacker-in-the-Loop approach.**
 
+![SHOBR diagram](docs/diagram.png)
+
 ## Introduction
 
 In 2026's job market, there are many job application automation tools, some of
@@ -12,8 +14,6 @@ them FOSS. This one's mine, and relies on these tools:
   automation of your _own daily-driver browser_, and
 - [`roffume`](https://github.com/sebastiancarlos/roffume) for resume files
   management.
-
-![SHOBR diagram](docs/diagram.png)
 
 ## Design Philosophy & Features
 
