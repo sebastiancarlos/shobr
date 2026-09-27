@@ -13,7 +13,7 @@ them FOSS. This one's mine, and relies on these tools:
 - [`roffume`](https://github.com/sebastiancarlos/roffume) for resume files
   management.
 
-![SHOBR pipeline diagram](docs/pipeline-diagram.png)
+![SHOBR diagram](docs/diagram.png)
 
 ## Design Philosophy & Features
 
