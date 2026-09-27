@@ -10,6 +10,8 @@ Hacker-in-the-Loop approach.**
 ![shobr](https://github.com/sebastiancarlos/shobr/actions/workflows/ci.yml/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+https://github.com/user-attachments/assets/47336c4f-1ca8-40e4-869d-5496bf7fae53
+
 ## Introduction
 
 In 2026's job market, there are many job application automation tools, some of
