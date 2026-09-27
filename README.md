@@ -98,14 +98,14 @@ Then, in order:
 2. Ensure you have one `beachpatrol` profile which is logged into LinkedIn.
    Put that _`beachpatrol` profile name_ in `config.toml` on the
    `beachpatrol_profile` key.
-3. For the parts of `shobr` requiring LLMs, `any-llm-sdk` reads provider keys
+3. For the parts of SHOBR requiring LLMs, `any-llm-sdk` reads provider keys
    from env (`OPENAI_API_KEY`, `SHOBR_AI_MODEL`, and `OPENAI_BASE_URL`).
    Naturally, you can use any LLM API provider you want through `any-llm-sdk`
    (or even hijack a locally available LLM agent subscription by using
    [`faaah`](https://github.com/sebastiancarlos/faaah)).
-4. For the parts of `shobr` requiring to read your **main CV**, you can refer
+4. For the parts of SHOBR requiring to read your **main CV**, you can refer
    to it via the env `SHOBR_MAIN_CV_PATH` (or see next step).
-5. For the parts of `shobr` requiring authoring CVs and application
+5. For the parts of SHOBR requiring authoring CVs and application
    directories, you need to configure a **CV toolchain.**
     - The first time you reach the `tailor` step, `shobr` will offer to clone
      the latest [`roffume`](https://github.com/sebastiancarlos/roffume)
@@ -228,7 +228,7 @@ Local Kanban-style tracking for your applications.
 
 ## Configuration
 
-Everything shobr knows about _you_ lives under
+Everything SHOBR knows about _you_ lives under
 `$XDG_CONFIG_HOME/shobr/` (default `~/.config/shobr`): one `config.toml` plus
 a `profile/*.md` folder. `shobr setup` scaffolds all of them with
 instructional templates.
@@ -395,7 +395,7 @@ forking-and-hacking).
     *.pdf                  # built outputs
 ```
 
-## Shobr File Structure
+## SHOBR File Structure
 
 ```
 shobr/
