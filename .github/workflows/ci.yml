@@ -92,4 +92,4 @@ jobs:
         run: uv run pyright
 
       - name: Run E2E suite
-        run: uv run python test.py
+        run: uv run python test.py --workers 2
