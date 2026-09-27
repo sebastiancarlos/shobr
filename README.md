@@ -239,67 +239,91 @@ profile/
 
 ### `config.toml`
 
-- **`cv_toolchain_dir`** (required)
-  - Home of the _CV toolchain_ (a `roffume` git checkout). The _main resume_
-    defaults to `<cv_toolchain_dir>/resume.md`.
-  - The _CV toolchain_ directory will ultimately contain all the generated CVs
-    and other data, in its internal "per-application" directories.
-- **`beachpatrol_profile`** (required)
-  - `beachpatrol` browser profile holding the logged-in LinkedIn session.
-- **`beachpatrol_browser`** (default `"chromium"`)
-  - `beachpatrol` browser to drive.
-- **`titles`** (required, list of strings)
-  - Job titles fed to LinkedIn search as one ORed keyword query. Like
-    "Software Engineer", "Fullstack Developer", etc.
-- **`workplace_types`** (optional, list of strings)
-  - Appended to the same search OR query
-  - Possible values are: `on-site`, `hybrid`, `remote`.
-- **`geo`** (optional list of strings)
-  - Geo targets for the query, referred to BY NAME through the `[geo_ids]`
-    map.
-- **`[geo_ids]`** (optional table, name = digits-only id)
-  - Maps each geo name to a LinkedIn geoId.
-  - The names are totally customizable, but should represent the name of a
-    real-world location.
-  - You have to obtain the id directly from the LinkedIn Jobs URLs (`geoId=`),
-    after performing a search for a given location. Note that LinkedIn often
-    has several ids per place (city vs metro area).
-- **`reject_employment_type`** (optional list, can be empty)
-  - Employment types rejected at enrichment.
-  - Possible values are: `Full-time`, `Part-time`, `Contract`, `Temporary`,
-    `Internship`.
-- **`presence_locations`** (optional list, can be empty)
-  - Places acceptable for presence-required work.
-  - Values are literal strings of names of locations (matched
-    case-insensitive).
-  - Remote postings pass anywhere. "On-site" and "hybrid" postings must name a
-    listed location.
-- **`[reject_title]`** (optional table, label = Python regex)
-  - Filters by pre-filter.
-  - Matched against job title. The leads are rejected with reason `title
-contains '<label>'`.
+#### `cv_toolchain_dir` (required)
+
+Home of the _CV toolchain_ (a `roffume` git checkout). The _main resume_
+defaults to `<cv_toolchain_dir>/resume.md`. The _CV toolchain_ directory will
+ultimately contain all the generated CVs and other data, in its internal
+"per-application" directories.
+
+#### `beachpatrol_profile` (required)
+
+`beachpatrol` browser profile holding the logged-in LinkedIn session.
+
+#### `beachpatrol_browser` (default `"chromium"`)
+
+`beachpatrol` browser to drive.
+
+#### `titles` (required, list of strings)
+
+Job titles fed to LinkedIn search as one ORed keyword query. Like
+"Software Engineer", "Fullstack Developer", etc.
+
+#### `workplace_types` (optional, list of strings)
+
+Appended to the same search OR query. Possible values are: `on-site`,
+`hybrid`, `remote`.
+
+#### `geo` (optional list of strings)
+
+Geo targets for the query, referred to BY NAME through the `[geo_ids]` map.
+
+#### `[geo_ids]` (optional table, name = digits-only id)
+
+Maps each geo name to a LinkedIn geoId. The names are totally customizable,
+but should represent the name of a real-world location. You have to obtain
+the id directly from the LinkedIn Jobs URLs (`geoId=`), after performing a
+search for a given location. Note that LinkedIn often has several ids per
+place (city vs metro area).
+
+#### `reject_employment_type` (optional list, can be empty)
+
+Employment types rejected at enrichment. Possible values are: `Full-time`,
+`Part-time`, `Contract`, `Temporary`, `Internship`.
+
+#### `presence_locations` (optional list, can be empty)
+
+Places acceptable for presence-required work. Values are literal strings of
+names of locations (matched case-insensitive). Remote postings pass anywhere.
+"On-site" and "hybrid" postings must name a listed location.
+
+#### `[reject_title]` (optional table, label = Python regex)
+
+Filters by pre-filter. Matched against job title. The leads are rejected with
+reason `title contains '<label>'`.
 
 ### `profile/*.md` and the Main CV
 
 The LLM stages read your profile as plain markdown files. Initialize the
 profile templates with `shobr setup`, and then fill the files yourself.
 
-- **The main CV**
-  - Your main CV, used as a base to generate tailored CVs. Referred by either
-    `SHOBR_MAIN_CV_PATH` or `<cv_toolchain_dir>/resume.md`.
-- **`profile/user-detail.md`**
-  - Work history and proficiencies in more detail than the CV.
-- **`profile/fit-criteria.md`**
-  - What makes a lead worth pursuing, in your own words.
-- **`profile/deal-breakers.md`**
-  - Veto rules (if found to match, it produces a score of `1`, meaning that
-    the lead is discarded).
-- **`profile/resume-guide.md`**
-  - Your own rules and suggestions on how to tailor your main CV to a
-    particular application. It might include formatting rules.
-- **`profile/cover-guide.md`**
-  - Guide about how to write the cover letter for a given application. Explain
-    tone, length, etc.
+#### The main CV
+
+Your main CV, used as a base to generate tailored CVs. Referred by either
+`SHOBR_MAIN_CV_PATH` or `<cv_toolchain_dir>/resume.md`.
+
+#### `profile/user-detail.md`
+
+Work history and proficiencies in more detail than the CV.
+
+#### `profile/fit-criteria.md`
+
+What makes a lead worth pursuing, in your own words.
+
+#### `profile/deal-breakers.md`
+
+Veto rules (if found to match, it produces a score of `1`, meaning that the
+lead is discarded).
+
+#### `profile/resume-guide.md`
+
+Your own rules and suggestions on how to tailor your main CV to a particular
+application. It might include formatting rules.
+
+#### `profile/cover-guide.md`
+
+Guide about how to write the cover letter for a given application. Explain
+tone, length, etc.
 
 ## The CV Toolchain
 
