@@ -1,0 +1,77 @@
+name: Test (Linux, macOS)
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+  # Allow manual triggering from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    env:
+      # Make uv use its managed Python (cacheable)
+      UV_PYTHON_PREFERENCE: only-managed
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout shobr
+        uses: actions/checkout@v7
+
+      - name: Check out beachpatrol (unreleased, tracks main for now)
+        uses: actions/checkout@v7
+        with:
+          repository: sebastiancarlos/beachpatrol
+          path: beachpatrol
+
+      - name: Set up uv and Python 3.14
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-python: true
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "npm"
+          cache-dependency-path: beachpatrol/package-lock.json
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/Library/Caches/ms-playwright
+          key: playwright-${{ matrix.os }}-chromium-${{ hashFiles('beachpatrol/package-lock.json') }}
+
+      - name: Install beachpatrol
+        working-directory: beachpatrol
+        run: |
+          npm ci
+          npx playwright install --with-deps --no-shell chromium
+          make install prefix="$HOME/.local"
+
+      - name: Add beachpatrol to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install project and dev dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Lint
+        run: uv run ruff check src test.py
+
+      - name: Typecheck
+        run: uv run pyright
+
+      - name: Run E2E suite
+        run: uv run python test.py --workers 2
