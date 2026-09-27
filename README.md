@@ -241,6 +241,10 @@ profile/
 
 #### `cv_toolchain_dir` (required)
 
+```toml
+cv_toolchain_dir = "~/shobr-resumes"
+```
+
 Home of the _CV toolchain_ (a `roffume` git checkout). The _main resume_
 defaults to `<cv_toolchain_dir>/resume.md`. The _CV toolchain_ directory will
 ultimately contain all the generated CVs and other data, in its internal
@@ -248,27 +252,53 @@ ultimately contain all the generated CVs and other data, in its internal
 
 #### `beachpatrol_profile` (required)
 
+```toml
+beachpatrol_profile = "job-hunter"
+```
+
 `beachpatrol` browser profile holding the logged-in LinkedIn session.
 
 #### `beachpatrol_browser` (default `"chromium"`)
 
+```toml
+beachpatrol_browser = "chromium"
+```
+
 `beachpatrol` browser to drive.
 
 #### `titles` (required, list of strings)
+
+```toml
+titles = ["Technical Lead", "Software Engineer", "Senior Software Engineer"]
+```
 
 Job titles fed to LinkedIn search as one ORed keyword query. Like
 "Software Engineer", "Fullstack Developer", etc.
 
 #### `workplace_types` (optional, list of strings)
 
+```toml
+workplace_types = ["on-site", "hybrid", "remote"]
+```
+
 Appended to the same search OR query. Possible values are: `on-site`,
 `hybrid`, `remote`.
 
 #### `geo` (optional list of strings)
 
+```toml
+geo = ["new-york-city", "san-francisco-bay-area"]
+```
+
 Geo targets for the query, referred to BY NAME through the `[geo_ids]` map.
 
 #### `[geo_ids]` (optional table, name = digits-only id)
+
+```toml
+[geo_ids]
+new-york-city = "111111111"
+san-francisco-bay-area = "222222222"
+```
 
 Maps each geo name to a LinkedIn geoId. The names are totally customizable,
 but should represent the name of a real-world location. You have to obtain
@@ -278,16 +308,30 @@ place (city vs metro area).
 
 #### `reject_employment_type` (optional list, can be empty)
 
+```toml
+reject_employment_type = ["Internship"]
+```
+
 Employment types rejected at enrichment. Possible values are: `Full-time`,
 `Part-time`, `Contract`, `Temporary`, `Internship`.
 
 #### `presence_locations` (optional list, can be empty)
+
+```toml
+presence_locations = ["New York"]
+```
 
 Places acceptable for presence-required work. Values are literal strings of
 names of locations (matched case-insensitive). Remote postings pass anywhere.
 "On-site" and "hybrid" postings must name a listed location.
 
 #### `[reject_title]` (optional table, label = Python regex)
+
+```toml
+[reject_title]
+golang = "\\bgolang\\b"
+devops = "\\bdevops\\b"
+```
 
 Filters by pre-filter. Matched against job title. The leads are rejected with
 reason `title contains '<label>'`.
