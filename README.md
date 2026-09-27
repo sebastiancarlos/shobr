@@ -240,7 +240,7 @@ profile/
   resume-guide.md cover-guide.md                    # tailor-only inputs
 ```
 
-### `config.toml`
+### [`config.toml`](src/shobr/templates/config.toml)
 
 #### `cv_toolchain_dir` (required)
 
