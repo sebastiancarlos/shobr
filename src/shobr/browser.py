@@ -22,9 +22,16 @@ def commands_install() -> None:
         )
     for src in sources:
         link = BEACHPATROL_COMMANDS_DIR / src.name
-        if link.exists():
-            print(f"skip {link.name} (already exists)")
-            continue
+        if link.is_symlink():
+            if link.resolve() == src:
+                print(f"skip {link.name} (already exists)")
+                continue
+            link.unlink()
+            print(f"relink {link.name}")
+        elif link.exists():
+            raise ShobrError(
+                f"cannot link {link.name}: {short_path(link)} exists and is not a symlink"
+            )
         link.symlink_to(src)
         print(f"linked {link.name}")
 

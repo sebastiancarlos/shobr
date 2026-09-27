@@ -846,6 +846,34 @@ class TestCLI(unittest.TestCase):
             self.assertIn("already exists", result.stdout)
             self.assertTrue(link.is_symlink())
 
+    def test_setup_repairs_stale_command_links(self) -> None:
+        """setup replaces a dangling command symlink instead of crashing."""
+        with TestDataHome() as data_home:
+            env = data_home.env
+            commands_home = data_home.path / "beachpatrol" / "commands"
+            commands_home.mkdir(parents=True)
+            link = commands_home / "dump-page.js"
+            link.symlink_to(data_home.path / "gone" / "dump-page.js")
+
+            result = shobr("setup", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("relink dump-page.js", result.stdout)
+            self.assertTrue(link.is_symlink())
+            self.assertTrue(os.path.realpath(link).startswith(str(BEACHPATROL_COMMANDS_LOCAL_DIR)))
+
+    def test_setup_refuses_blocking_command_file(self) -> None:
+        """setup fails loudly when a real file blocks a command link."""
+        with TestDataHome() as data_home:
+            env = data_home.env
+            commands_home = data_home.path / "beachpatrol" / "commands"
+            commands_home.mkdir(parents=True)
+            (commands_home / "dump-page.js").write_text("// mine\n")
+
+            result = shobr("setup", env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("dump-page.js", result.stderr)
+            self.assertIn("not a symlink", result.stderr)
+
     def test_setup_scaffolds_templates(self) -> None:
         """setup writes instructional profile .md scaffolds plus the
         default config.toml, keeping files that already exist."""
