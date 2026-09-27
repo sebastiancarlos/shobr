@@ -3,6 +3,9 @@
 **The stealthiest, UNIX-iest, ethical Job Search Automator, with a
 Hacker-in-the-Loop approach.**
 
+![shobr](https://github.com/sebastiancarlos/shobr/actions/workflows/ci.yml/badge.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ## Introduction
 
 In 2026's job market, there are many job application automation tools, some of
