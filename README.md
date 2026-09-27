@@ -349,25 +349,25 @@ profile templates with `shobr setup`, and then fill the files yourself.
 Your main CV, used as a base to generate tailored CVs. Referred by either
 `SHOBR_MAIN_CV_PATH` or `<cv_toolchain_dir>/resume.md`.
 
-#### `profile/user-detail.md`
+#### [`profile/user-detail.md`](src/shobr/templates/profile-user-detail.md)
 
 Work history and proficiencies in more detail than the CV.
 
-#### `profile/fit-criteria.md`
+#### [`profile/fit-criteria.md`](src/shobr/templates/profile-fit-criteria.md)
 
 What makes a lead worth pursuing, in your own words.
 
-#### `profile/deal-breakers.md`
+#### [`profile/deal-breakers.md`](src/shobr/templates/profile-deal-breakers.md)
 
 Veto rules (if found to match, it produces a score of `1`, meaning that the
 lead is discarded).
 
-#### `profile/resume-guide.md`
+#### [`profile/resume-guide.md`](src/shobr/templates/profile-resume-guide.md)
 
 Your own rules and suggestions on how to tailor your main CV to a particular
 application. It might include formatting rules.
 
-#### `profile/cover-guide.md`
+#### [`profile/cover-guide.md`](src/shobr/templates/profile-cover-guide.md)
 
 Guide about how to write the cover letter for a given application. Explain
 tone, length, etc.
