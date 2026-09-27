@@ -580,7 +580,11 @@ def _ensure_roffume_cache() -> Path:
     """
     cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
     cache = cache / "shobr" / "roffume" / ROFFUME_PIN
-    if not (cache / "new-application").is_file():
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache.parent / f"{ROFFUME_PIN}.lock", "w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if (cache / "new-application").is_file():
+            return cache
         shutil.rmtree(cache, ignore_errors=True)
         try:
             subprocess.run(
