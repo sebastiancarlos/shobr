@@ -447,4 +447,4 @@ smoke/         linkedin-homepage.html              # smoke-test-browser dump
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT
