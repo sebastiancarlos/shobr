@@ -1,5 +1,9 @@
 # SHOBR - Simulate Human Occupational-Bureaucratic Rituals
 
+<p align="center">
+  <img src="docs/logo.png" alt="shobr" width="70%">
+</p>
+
 **The stealthiest, UNIX-iest, ethical Job Search Automator, with a
 Hacker-in-the-Loop approach.**
 
