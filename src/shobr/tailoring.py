@@ -7,13 +7,12 @@ from typing import NoReturn, TypedDict, cast
 
 from .ai import chat_completion, parse_json_object
 from .color import BLUE, BOLD, GREEN, RESET, YELLOW
-from .config import resolve_cv_toolchain_dir
+from .config import load_config, resolve_cv_toolchain_dir
 from .core import (
     DataKind,
     ShobrError,
     event_log,
     get_enriched_row_on_stage,
-    is_at_stage,
     paged,
     persist_event,
     read_events,
@@ -30,14 +29,24 @@ from .cv_toolchain import (
     ensure_worktree_clean,
     git_commit,
 )
-from .enrichment import EnrichedRow, get_enriched_rows, project_enrichment, validity_tag
+from .enrichment import (
+    EnrichedRow,
+    get_enriched_rows,
+    project_enrichment,
+    refuse_if_stale,
+    staleness_tag,
+    validity_tag,
+)
 from .screening import (
     PROFILE_FILES,
     TAILOR_FILES,
+    ReviewDecision,
     ScreeningProfile,
+    ScreeningRow,
     job_posting_block,
     load_files,
     profile_blocks,
+    project_screening,
 )
 
 TAILOR_MAX_REWRITES = 4
@@ -119,7 +128,8 @@ def print_tailored() -> None:
             )
             print(stage_line(row["posting_id"], DataKind.TAILORING))
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-            print(f"  - Last Enriched At: {checked}")
+            threshold = load_config()["stale_after_days"]
+            print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
             built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
             print(f"  - Tailored At: {built}")
 
@@ -331,7 +341,7 @@ def _run_tailor_live(
     _record_package(row, slug, str(app_dir), rewrites, current_md, cover_md)
 
 
-def _run_tailor_for_row(row: EnrichedRow, print_prompt: bool) -> None:
+def _run_tailor_for_row(row: EnrichedRow, print_prompt: bool, force: bool = False) -> None:
     """Print the tailoring prompts for one row, or build the package live."""
     profile = load_tailor_profile()
     if print_prompt:
@@ -351,21 +361,42 @@ def _run_tailor_for_row(row: EnrichedRow, print_prompt: bool) -> None:
             print(f"=== PROMPT: {name} ===")
             print(prompt)
         return
+    refuse_if_stale(row, load_config()["stale_after_days"], force)
     _run_tailor_live(row, profile)
 
 
-def tailor_posting_id(posting_id: str, print_prompt: bool) -> None:
+def tailor_posting_id(posting_id: str, print_prompt: bool, force: bool = False) -> None:
     """Build the application package for a specific pursue posting."""
     row = get_enriched_row_on_stage(posting_id, "tailorable")
-    _run_tailor_for_row(row, print_prompt)
+    _run_tailor_for_row(row, print_prompt, force)
 
 
-def tailor_next(print_prompt: bool) -> None:
+def oldest_tailorable(
+    enriched: list[EnrichedRow],
+    screened: dict[str, ScreeningRow],
+    tailored: dict[str, TailoringRow],
+) -> EnrichedRow | None:
+    """Oldest pursue row with no package yet, still passing enrichment."""
+    tailored_ids = set(tailored)
+    for row in enriched:
+        sr = screened.get(row["posting_id"])
+        if (
+            sr is not None
+            and sr["decision"] == ReviewDecision.PURSUE
+            and row["posting_id"] not in tailored_ids
+            and row["actionable"]
+        ):
+            return row
+    return None
+
+
+def tailor_next(print_prompt: bool, force: bool = False) -> None:
     """Build the package for the oldest pursue row with no package yet."""
     rows = get_enriched_rows()
-    for posting_id, row in rows.items():
-        if not is_at_stage(posting_id, "tailorable"):
-            continue
-        _run_tailor_for_row(row, print_prompt)
+    row = oldest_tailorable(
+        list(rows.values()), project_screening()["rows"], project_tailoring()["rows"]
+    )
+    if row is None:
+        print("nothing to tailor")
         return
-    print("nothing to tailor")
+    _run_tailor_for_row(row, print_prompt, force)

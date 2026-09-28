@@ -5,7 +5,7 @@
 - {company} ({posting_id})
 - {title}
 - {pills}
-- Last Enriched At: {checked}
+- Last Enriched At: {checked}{stale}
 {apply_lines}
 {ai_lines}
 ## Job Description

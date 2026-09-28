@@ -335,6 +335,18 @@ Places acceptable for presence-required work. Values are literal strings of
 names of locations (matched case-insensitive). Remote postings pass anywhere.
 "On-site" and "hybrid" postings must name a listed location.
 
+#### `stale_after_days` (optional integer, default `2`)
+
+```toml
+stale_after_days = 2
+```
+
+Days after the last enrichment check when a lead counts as stale. It's
+important to re-enrich stale leads to ensure they're still open.
+
+Costly actions (screening, tailoring, etc) refuse stale rows unless passing
+`--force`.
+
 #### `[reject_title]` (optional table, label = Python regex)
 
 ```toml

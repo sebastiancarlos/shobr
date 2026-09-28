@@ -32,6 +32,10 @@ reject_employment_type = ["Internship"]
 # user is in no possession of a teleportation device.
 presence_locations = ["testville"]
 
+# Days after the last enrichment check when a lead counts as stale.
+# Stale leads get re-check recommendations.
+stale_after_days = 2
+
 # Geo name to LinkedIn geoId map, the source of truth for geo targets above.
 # Obtain ids manually: search the place on LinkedIn Jobs and copy geoId=
 # from the resulting URL. Beware precision: LinkedIn often has several ids

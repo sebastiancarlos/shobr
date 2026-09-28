@@ -31,8 +31,11 @@ from .core import (
 from .enrichment import (
     EnrichedRow,
     get_enriched_rows,
+    is_stale,
     print_enriched_row,
     project_enrichment,
+    refuse_if_stale,
+    staleness_tag,
     validity_tag,
 )
 
@@ -438,7 +441,8 @@ def print_screened(score_filter: str | None = None) -> None:
             print_screening_status(row, "  ")
             print(stage_line(row["posting_id"], DataKind.SCREENING))
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-            print(f"  - Last Enriched At: {checked}")
+            threshold = load_config()["stale_after_days"]
+            print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
             scored = [
                 review["scored_at"] for review in (row["human"], row["ai"]) if review is not None
             ]
@@ -534,6 +538,7 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
 {labeled_block("- Reasoning:", ai["reasoning"])}
 """
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
+    threshold = load_config()["stale_after_days"]
     return render_template(
         "editor-screening.md",
         company=row["company"],
@@ -541,6 +546,7 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
         title=row["title"],
         pills=pills,
         checked=checked,
+        stale=staleness_tag(row, threshold),
         apply_lines=apply_lines,
         ai_lines=ai_lines,
         job_description=row["job_description"],
@@ -611,6 +617,7 @@ def _screen_row(
     screened: _ScreenedStore,
     score: int | None,
     reason: str | None,
+    force: bool = False,
 ) -> None:
     """Screen one enriched row via argv or $EDITOR.
 
@@ -621,6 +628,7 @@ def _screen_row(
         raise ShobrError("give either both score and reason, or neither")
     print_enriched_row(row, short=True)
     _print_screening_line(row, screened)
+    refuse_if_stale(row, load_config()["stale_after_days"], force)
     if score is not None and reason is not None:
         _record_review(row, score, reason, _ReviewKind.HUMAN)
         return
@@ -628,9 +636,9 @@ def _screen_row(
     _screen_row_via_editor(row, sr["ai"] if sr else None)
 
 
-def _oldest_missing_review(
+def oldest_missing_review(
     rows: dict[str, EnrichedRow],
-    screened: _ScreenedStore,
+    screened: dict[str, ScreeningRow],
     kind: Literal["human", "ai"],
     exclude: frozenset[str] = frozenset(),
 ) -> EnrichedRow | None:
@@ -643,7 +651,7 @@ def _oldest_missing_review(
             continue
         if row["posting_id"] in exclude:
             continue
-        sr = screened["rows"].get(row["posting_id"])
+        sr = screened.get(row["posting_id"])
         if sr is not None:
             if sr[kind] is not None:
                 continue
@@ -659,13 +667,14 @@ def _has_human_review(posting_id: str) -> bool:
     return sr is not None and sr["human"] is not None
 
 
-def _run_llm_for_row(row: EnrichedRow, print_prompt: bool) -> None:
+def _run_llm_for_row(row: EnrichedRow, print_prompt: bool, force: bool = False) -> None:
     """Print the LLM scoring prompt for one row, or score it live."""
     profile = _load_profile()
     prompt = _screen_prompt(row, profile)
     if print_prompt:
         print(prompt)
         return
+    refuse_if_stale(row, load_config()["stale_after_days"], force)
     print(
         f"Sent AI review request for lead {BOLD}[{row['company']}] "
         f"{row['posting_id']} ({row['title']}){RESET}."
@@ -681,49 +690,51 @@ def _run_llm_for_row(row: EnrichedRow, print_prompt: bool) -> None:
     _record_review(row, score, reasoning, _ReviewKind.AI)
 
 
-def screen_next(score: int | None, reason: str | None) -> None:
+def screen_next(score: int | None, reason: str | None, force: bool = False) -> None:
     """Record a human screening for the oldest enriched passing lead with no
     human review yet."""
     rows = get_enriched_rows()
     screened = project_screening()
-    row = _oldest_missing_review(rows, screened, "human")
+    row = oldest_missing_review(rows, screened["rows"], "human")
     if row is None:
         print("no leads to screen")
         return
-    _screen_row(row, screened, score, reason)
+    _screen_row(row, screened, score, reason, force)
 
 
-def screen_posting_id(posting_id: str, score: int | None, reason: str | None) -> None:
+def screen_posting_id(
+    posting_id: str, score: int | None, reason: str | None, force: bool = False
+) -> None:
     """Record a human screening for a specific enriched posting."""
     row = get_enriched_row_on_stage(posting_id, "screenable")
     screened = project_screening()
-    _screen_row(row, screened, score, reason)
+    _screen_row(row, screened, score, reason, force)
 
 
-def screen_llm_next(print_prompt: bool) -> None:
+def screen_llm_next(print_prompt: bool, force: bool = False) -> None:
     """Record an LLM screening for the oldest enriched passing lead with no
     human review yet."""
     rows = get_enriched_rows()
     screened = project_screening()
-    row = _oldest_missing_review(rows, screened, "ai")
+    row = oldest_missing_review(rows, screened["rows"], "ai")
     if row is None:
         print("no leads to screen")
         return
     if print_prompt:
         _run_llm_for_row(row, print_prompt)
         return
-    if not _score_row_with_retries(row):
+    if not _score_row_with_retries(row, force):
         raise ShobrError(f"could not score posting {row['posting_id']}")
 
 
 _SCREEN_LLM_MAX_RETRIES = 2
 
 
-def _score_row_with_retries(row: EnrichedRow) -> bool:
+def _score_row_with_retries(row: EnrichedRow, force: bool = False) -> bool:
     """Score one row through the LLM, retrying failures."""
     for _ in range(_SCREEN_LLM_MAX_RETRIES + 1):
         try:
-            _run_llm_for_row(row, False)
+            _run_llm_for_row(row, False, force)
         except ShobrError as exc:
             print(exc, file=sys.stderr)
             continue
@@ -731,30 +742,55 @@ def _score_row_with_retries(row: EnrichedRow) -> bool:
     return False
 
 
-def screen_llm_all() -> None:
+def screen_llm_all(force: bool = False) -> None:
     """Record LLM screenings for every enriched passing lead with no AI or
-    human review yet, retrying failures."""
+    human review yet, retrying failures. Skips stale rows unless forced."""
     rows = get_enriched_rows()
     _load_profile()  # fail fast on invalid profile
+    threshold = load_config()["stale_after_days"]
+    screened = project_screening()["rows"]
+    pending = [
+        row
+        for row in rows.values()
+        if row["actionable"]
+        and (
+            (sr := screened.get(row["posting_id"])) is None
+            or (sr["ai"] is None and sr["human"] is None)
+        )
+    ]
+    skipped = sorted(row["posting_id"] for row in pending if not force and is_stale(row, threshold))
+    if skipped:
+        print(
+            f"{len(skipped)} of {len(pending)} rows to score were last checked over"
+            f" {threshold} days ago; skipping stale rows"
+            + ("" if force else " (pass --force to score them anyway)")
+        )
+    rows = {
+        pid: row
+        for pid, row in sorted(rows.items(), key=lambda kv: is_stale(kv[1], threshold))
+        if force or pid not in skipped
+    }
     scored = 0
     failed: list[str] = []
     while True:
-        screened = project_screening()
-        row = _oldest_missing_review(rows, screened, "ai", exclude=frozenset(failed))
+        screened = project_screening()["rows"]
+        row = oldest_missing_review(rows, screened, "ai", exclude=frozenset(failed))
         if row is None:
             break
-        if _score_row_with_retries(row):
+        if _score_row_with_retries(row, force):
             scored += 1
         else:
             failed.append(row["posting_id"])
     print(f"Scored {scored} leads.")
     if failed:
         raise ShobrError(f"Failed to score {len(failed)}: {', '.join(failed)}")
+    if scored == 0 and skipped:
+        raise ShobrError(f"All {len(skipped)} pending rows stale; re-enrich first or pass --force")
 
 
-def screen_llm_posting_id(posting_id: str, print_prompt: bool) -> None:
+def screen_llm_posting_id(posting_id: str, print_prompt: bool, force: bool = False) -> None:
     """Record an LLM screening for a specific enriched posting."""
     row = get_enriched_row_on_stage(posting_id, "screenable")
     if _has_human_review(posting_id):
         raise ShobrError(f"posting {posting_id} already has a human review")
-    _run_llm_for_row(row, print_prompt)
+    _run_llm_for_row(row, print_prompt, force)

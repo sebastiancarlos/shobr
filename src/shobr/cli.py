@@ -31,7 +31,9 @@ from .tracking import (
 )
 
 
-def _print_prompt_arg(subparser: argparse.ArgumentParser, plural: bool = False) -> None:
+def _print_prompt_arg(
+    subparser: argparse.ArgumentParser, plural: bool = False
+) -> argparse.ArgumentParser:
     """Add a --print-prompt(s) flag."""
     noun = "prompts" if plural else "prompt"
     subparser.add_argument(
@@ -39,6 +41,17 @@ def _print_prompt_arg(subparser: argparse.ArgumentParser, plural: bool = False) 
         action="store_true",
         help=f"print the built {noun} without calling the LLM",
     )
+    return subparser
+
+
+def _force_arg(subparser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add a --force flag."""
+    subparser.add_argument(
+        "--force",
+        action="store_true",
+        help="act on stale rows instead of refusing",
+    )
+    return subparser
 
 
 def main() -> None:
@@ -103,6 +116,7 @@ def main() -> None:
         help="fit score 1-5; omit to review in $EDITOR",
     )
     screen.add_argument("--reason", help="free-text reasoning; must accompany a score")
+    _force_arg(screen)
 
     screen_next_parser = sub.add_parser(
         "screen-next",
@@ -117,41 +131,39 @@ def main() -> None:
         "--reason",
         help="free-text reasoning; must accompany --score",
     )
+    _force_arg(screen_next_parser)
 
     screen_llm = sub.add_parser(
         "screen-llm",
         help="print the LLM scoring prompt for a posting id",
     )
     screen_llm.add_argument("posting_id", help="LinkedIn posting id to score")
-    _print_prompt_arg(screen_llm)
+    _force_arg(_print_prompt_arg(screen_llm))
 
-    _print_prompt_arg(
-        sub.add_parser(
-            "screen-llm-next",
-            help="print the LLM scoring prompt for the oldest unscored lead",
-        )
+    screen_llm_next_parser = sub.add_parser(
+        "screen-llm-next",
+        help="print the LLM scoring prompt for the oldest unscored lead",
     )
+    _force_arg(_print_prompt_arg(screen_llm_next_parser))
 
-    for name, help_text in [
-        ("screen-llm-all", "score every unscored lead through the LLM"),
-        ("tailored", "print every tailored package stored so far"),
-    ]:
-        sub.add_parser(name, help=help_text)
+    screen_llm_all_parser = sub.add_parser(
+        "screen-llm-all", help="score every unscored lead through the LLM"
+    )
+    _force_arg(screen_llm_all_parser)
+    sub.add_parser("tailored", help="print every tailored package stored so far")
 
     tailor = sub.add_parser(
         "tailor",
         help="build the application package for a posting id",
     )
     tailor.add_argument("posting_id", help="LinkedIn posting id to tailor for")
-    _print_prompt_arg(tailor, plural=True)
+    _force_arg(_print_prompt_arg(tailor, plural=True))
 
-    _print_prompt_arg(
-        sub.add_parser(
-            "tailor-next",
-            help="build the package for the oldest pursue row with no package yet",
-        ),
-        plural=True,
+    tailor_next_parser = sub.add_parser(
+        "tailor-next",
+        help="build the package for the oldest pursue row with no package yet",
     )
+    _force_arg(_print_prompt_arg(tailor_next_parser, plural=True))
 
     sub.add_parser(
         "tracked",
@@ -219,14 +231,14 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         "enrich": lambda: enrich_posting_id(args.posting_id),
         "enrich-next": enrich_next,
         "screened": lambda: print_screened(args.score),
-        "screen": lambda: screen_posting_id(args.posting_id, args.score, args.reason),
-        "screen-next": lambda: screen_next(args.score, args.reason),
-        "screen-llm": lambda: screen_llm_posting_id(args.posting_id, args.print_prompt),
-        "screen-llm-next": lambda: screen_llm_next(args.print_prompt),
-        "screen-llm-all": screen_llm_all,
+        "screen": lambda: screen_posting_id(args.posting_id, args.score, args.reason, args.force),
+        "screen-next": lambda: screen_next(args.score, args.reason, args.force),
+        "screen-llm": lambda: screen_llm_posting_id(args.posting_id, args.print_prompt, args.force),
+        "screen-llm-next": lambda: screen_llm_next(args.print_prompt, args.force),
+        "screen-llm-all": lambda: screen_llm_all(args.force),
         "tailored": print_tailored,
-        "tailor": lambda: tailor_posting_id(args.posting_id, args.print_prompt),
-        "tailor-next": lambda: tailor_next(args.print_prompt),
+        "tailor": lambda: tailor_posting_id(args.posting_id, args.print_prompt, args.force),
+        "tailor-next": lambda: tailor_next(args.print_prompt, args.force),
         "tracked": print_tracked,
         "track": lambda: track_posting_id(args.posting_id, args.status, args.note),
         "review": lambda: review_posting_id(args.posting_id),

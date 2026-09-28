@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import TypedDict
 
 from .color import BOLD, GREEN, RED, RESET, YELLOW
+from .config import load_config
 from .core import (
     DataKind,
     ShobrError,
@@ -16,7 +17,14 @@ from .core import (
     short_path,
     store_path,
 )
-from .enrichment import get_enriched_rows, print_apply_block, project_enrichment, validity_tag
+from .enrichment import (
+    get_enriched_rows,
+    print_apply_block,
+    project_enrichment,
+    staleness_tag,
+    validity_tag,
+    warn_if_stale,
+)
 from .screening import pill_line, print_screening_status, project_screening
 from .tailoring import TailoringRow, project_tailoring
 
@@ -118,6 +126,7 @@ def track_posting_id(posting_id: str, status: str, note: str | None) -> None:
             f"invalid status {status!r}; choose from " + ", ".join(s.value for s in TrackStatus)
         ) from None
     row = trackable_row(posting_id)
+    warn_if_stale(project_enrichment()["rows"][posting_id], load_config()["stale_after_days"])
     _record_transition(row, track_status, note)
 
 
@@ -145,7 +154,8 @@ def print_tracked() -> None:
             print(f"  - Status: {color}{str(row['status']).upper()}{RESET}")
             print(f"  - Tracked At: {datetime.fromisoformat(row['tracked_at']).date().isoformat()}")
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-            print(f"  - Last Enriched At: {checked}")
+            threshold = load_config()["stale_after_days"]
+            print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
             if row["note"]:
                 print(f"  - Note: {row['note']}")
 
@@ -163,9 +173,12 @@ def _print_review(row: TailoringRow) -> None:
         print(f"[{eref['company']}] {row['posting_id']}{validity_tag(eref)}")
         print(f"  - {eref['title']}")
         checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-        print(f"  - Last Enriched At: {checked}")
+        threshold = load_config()["stale_after_days"]
+        print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
         built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
         print(f"  - Tailored At: {built}")
+        threshold = load_config()["stale_after_days"]
+        warn_if_stale(eref, threshold)
         pills = pill_line(eref)
         if pills:
             print(f"  - {pills}")

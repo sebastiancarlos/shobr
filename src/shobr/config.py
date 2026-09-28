@@ -32,6 +32,7 @@ class Config(TypedDict):
     cv_toolchain_dir: str
     beachpatrol_profile: str | None
     beachpatrol_browser: str
+    stale_after_days: int
 
 
 _KNOWN_CONFIG_KEYS = frozenset(Config.__annotations__)
@@ -131,6 +132,10 @@ def load_config() -> Config:
         "employment type",
     )
 
+    raw_stale = data.get("stale_after_days", 2)
+    if isinstance(raw_stale, bool) or not isinstance(raw_stale, int) or raw_stale < 0:
+        raise ShobrError("config.toml: 'stale_after_days' must be a non-negative integer")
+
     raw_dir = data.get("cv_toolchain_dir")
     if not isinstance(raw_dir, str) or not raw_dir:
         raise ShobrError("config.toml: 'cv_toolchain_dir' must be a non-empty string")
@@ -152,6 +157,7 @@ def load_config() -> Config:
         "cv_toolchain_dir": raw_dir,
         "beachpatrol_profile": raw_profile,
         "beachpatrol_browser": raw_browser,
+        "stale_after_days": raw_stale,
     }
 
 

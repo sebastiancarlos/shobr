@@ -2,8 +2,10 @@
 
 import sys
 from collections.abc import Callable, Iterable
+from datetime import datetime
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
+from .config import load_config
 from .core import ShobrError
 from .discovery import StoredJob, discover, project_discovery
 from .enrichment import (
@@ -11,6 +13,7 @@ from .enrichment import (
     enrich_next,
     enrich_posting_id,
     is_closed,
+    is_stale,
     project_enrichment,
 )
 from .screening import (
@@ -18,6 +21,7 @@ from .screening import (
     ReviewDecision,
     Score,
     ScreeningRow,
+    oldest_missing_review,
     project_screening,
     screen_llm_next,
     screen_llm_posting_id,
@@ -26,6 +30,7 @@ from .screening import (
 )
 from .tailoring import (
     TailoringRow,
+    oldest_tailorable,
     project_tailoring,
     tailor_next,
     tailor_posting_id,
@@ -150,6 +155,34 @@ def print_status() -> None:
     closed = {row["posting_id"] for row in enriched if is_closed(row)}
     failing = {row["posting_id"] for row in enriched if not row["actionable"]}
     filtered = failing - closed
+    stale: set[str] = set()
+    if enriched:
+        threshold = load_config()["stale_after_days"]
+        stale = {row["posting_id"] for row in enriched if is_stale(row, threshold)}
+    passing = {row["posting_id"] for row in enriched if row["actionable"]}
+
+    def _stale_suffix(pids: Iterable[str]) -> str:
+        n = sum(1 for pid in pids if pid in stale)
+        return f" ({n} stale)" if n else ""
+
+    stale_note = {
+        "Pending Screening:": _stale_suffix(
+            row["posting_id"]
+            for row in enriched
+            if row["actionable"] and row["posting_id"] not in human_reviewed
+        ),
+        "Pending Human Review:": _stale_suffix(
+            pid for pid, sr in screened.items() if sr["decision"] == ReviewDecision.PENDING
+        ),
+        "Pending Tailoring:": _stale_suffix(
+            pid
+            for pid, sr in screened.items()
+            if sr["decision"] == ReviewDecision.PURSUE and pid not in tailored and pid in passing
+        ),
+        "Pending Review:": _stale_suffix(
+            pid for pid in tailored if pid not in tracked and pid in passing
+        ),
+    }
 
     def _breakdown(pids: Iterable[str]) -> str:
         parts = []
@@ -234,7 +267,8 @@ def print_status() -> None:
     for name, rows in sections:
         print(f"{BOLD}- {name}{RESET}")
         for label, count, color in rows:
-            print(f"  - {label:<{width}}  {color}{count}{RESET}{validity_note.get(label, '')}")
+            suffix = validity_note.get(label, "") + stale_note.get(label, "")
+            print(f"  - {label:<{width}}  {color}{count}{RESET}{suffix}")
             if name == "SCREENING" and label == "Pending Human Review:":
                 for line in histogram:
                     print(line)
@@ -284,6 +318,23 @@ def _run_next() -> None:
         lacking = _pending_ai_screening(enriched, human_reviewed, ai_reviewed)
         extra = f" ({lacking} lacking LLM screening)" if lacking else ""
         print(f"{pending} enriched leads awaiting screening{extra}.")
+        rows_by_id = {row["posting_id"]: row for row in enriched}
+        candidates = [oldest_missing_review(rows_by_id, screened, kind) for kind in ("ai", "human")]
+        oldest = min(
+            (row for row in candidates if row is not None),
+            key=lambda row: row["enriched_last_at"],
+            default=None,
+        )
+        threshold = load_config()["stale_after_days"]
+        if oldest is not None and is_stale(oldest, threshold):
+            checked = datetime.fromisoformat(oldest["enriched_last_at"]).date().isoformat()
+            print(f"Oldest pending row last checked {checked} (> {threshold} days ago).")
+            if _confirm(
+                f"Re-enrich it first? ({BLUE}shobr enrich {oldest['posting_id']}{RESET}) "
+                f"{BOLD}[y/N]{RESET} "
+            ):
+                enrich_posting_id(oldest["posting_id"])
+                return
         if lacking:
             answer = (
                 input(
@@ -311,6 +362,17 @@ def _run_next() -> None:
 
     if pending := _pending_tailoring(screened, set(tailored), enriched):
         print(f"{pending} pursue rows awaiting tailoring.")
+        oldest = oldest_tailorable(enriched, screened, tailored)
+        threshold = load_config()["stale_after_days"]
+        if oldest is not None and is_stale(oldest, threshold):
+            checked = datetime.fromisoformat(oldest["enriched_last_at"]).date().isoformat()
+            print(f"Oldest pending row last checked {checked} (> {threshold} days ago).")
+            if _confirm(
+                f"Re-enrich it first? ({BLUE}shobr enrich {oldest['posting_id']}{RESET}) "
+                f"{BOLD}[y/N]{RESET} "
+            ):
+                enrich_posting_id(oldest["posting_id"])
+                return
         if _confirm(
             f"Tailor oldest screened lead? ({BLUE}shobr tailor-next{RESET}) {BOLD}[y/N]{RESET} "
         ):

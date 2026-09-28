@@ -17,7 +17,7 @@ import termios
 import threading
 import time
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shobr.browser import BEACHPATROL_COMMANDS_LOCAL_DIR
@@ -759,6 +759,15 @@ def seed_enrichment_event(
     }
     event.update(overrides)
     _append_event(data_home.shobr_data / "enrichment" / "events.jsonl", event)
+
+
+def refresh_enrichment(data_home: TestDataHome, posting_id: str = "1234567890") -> None:
+    """Append a fresh passing enrichment event (un-stales the row)."""
+    seed_enrichment_event(
+        data_home,
+        posting_id=posting_id,
+        fetched_at=datetime.now(UTC).isoformat(timespec="seconds"),
+    )
 
 
 _READY_MARKER = "beachpatrol listening on"
@@ -2278,6 +2287,7 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(result.stdout.count("Apply (external)"), 1)
             self.assertIn("[FakeCo] 5550000001", result.stdout)
             self.assertIn("**Mission**", result.stdout)
+            self.assertNotIn("(STALE)", result.stdout)
             self.assertIn("  - Location type: Remote", result.stdout)
             self.assertIn("  - Employment type: Full-time", result.stdout)
             self.assertIn("  - Company description:", result.stdout)
@@ -3804,6 +3814,7 @@ class TestCLI(unittest.TestCase):
         """'shobr next' answering l at screening records an AI review."""
         with TestDataHome() as data_home:
             seed_minimal_lead(data_home)
+            refresh_enrichment(data_home)
             env = {**data_home.env, **seed_test_profile(data_home)}
             with FakeLLMServer() as llm_server:
                 env = {**env, **llm_server.env}
@@ -3820,6 +3831,7 @@ class TestCLI(unittest.TestCase):
         """'shobr next' answering h at screening records a human review."""
         with TestDataHome() as data_home:
             seed_minimal_lead(data_home)
+            refresh_enrichment(data_home)
             env = add_editor_to_env(
                 {**data_home.env, **seed_test_profile(data_home)},
                 "SHOBR_SCORE: 4\nSHOBR_REASONING: editor ok\n",
@@ -3839,6 +3851,7 @@ class TestCLI(unittest.TestCase):
         has an AI review."""
         with TestDataHome() as data_home:
             seed_minimal_lead(data_home)
+            refresh_enrichment(data_home)
             env = add_editor_to_env(
                 {**data_home.env, **seed_test_profile(data_home)},
                 "SHOBR_SCORE: 4\nSHOBR_REASONING: editor ok\n",
@@ -3880,6 +3893,7 @@ class TestCLI(unittest.TestCase):
                 **seed_test_cv(data_home),
             }
             seed_human_review(data_home, posting_id="1234567890")
+            refresh_enrichment(data_home, posting_id="1234567890")
             with FakeLLMServer() as llm_server:
                 env = {**env, **llm_server.env}
 
@@ -3977,6 +3991,7 @@ class TestCLI(unittest.TestCase):
         """'shobr next <id>' answering l records an AI review for it."""
         with TestDataHome() as data_home:
             seed_minimal_lead(data_home)
+            refresh_enrichment(data_home)
             env = {**data_home.env, **seed_test_profile(data_home)}
 
             with FakeLLMServer() as llm_server:
@@ -4384,6 +4399,7 @@ class TestCLI(unittest.TestCase):
             result = shobr("enriched", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Last Enriched At: 2026-09-14", result.stdout)
+            self.assertIn("(STALE)", result.stdout)
 
     def test_screened_shows_checked_date(self) -> None:
         """screened rows show the last-check date, refreshed by re-enrichment."""
@@ -4399,6 +4415,7 @@ class TestCLI(unittest.TestCase):
             result = shobr("screened", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Last Enriched At: 2026-09-14", result.stdout)
+            self.assertIn("(STALE)", result.stdout)
             self.assertIn("Reviewed At: 2026-09-13", result.stdout)
 
     def test_tailored_shows_checked_date(self) -> None:
@@ -4416,6 +4433,7 @@ class TestCLI(unittest.TestCase):
             result = shobr("tailored", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Last Enriched At: 2026-09-14", result.stdout)
+            self.assertIn("(STALE)", result.stdout)
             self.assertIn("Tailored At: 2026-09-13", result.stdout)
 
     def test_editor_template_shows_checked_date(self) -> None:
@@ -4434,9 +4452,10 @@ class TestCLI(unittest.TestCase):
                 "SHOBR_SCORE: 3\nSHOBR_REASONING: human agrees\n",
                 capture_to=template_capture,
             )
-            result = shobr("screen", "5550000001", env=env_editor)
+            result = shobr("screen", "5550000001", "--force", env=env_editor)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Last Enriched At: 2026-09-14", template_capture.read_text())
+            self.assertIn("(STALE)", template_capture.read_text())
 
     def test_tracked_shows_action_and_check_dates(self) -> None:
         """tracked keeps the action Date and adds Last Enriched At."""
@@ -4450,12 +4469,327 @@ class TestCLI(unittest.TestCase):
             seed_enrichment_event(
                 data_home,
                 posting_id="5550000001",
-                fetched_at="2026-09-14T00:00:00+00:00",
+                fetched_at="2020-01-01T00:00:00+00:00",
             )
             result = shobr("tracked", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertRegex(result.stdout, r"Tracked At: \d{4}-\d{2}-\d{2}")
-            self.assertIn("Last Enriched At: 2026-09-14", result.stdout)
+            self.assertIn("Last Enriched At: 2020-01-01", result.stdout)
+            self.assertIn("(STALE)", result.stdout)
+
+    def test_review_warns_stale_package(self) -> None:
+        """review warns with a re-enrich command for a stale package."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="5550000001")
+            seed_tailored_package(data_home)
+            result = shobr("review", "5550000001", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Stale:", result.stdout)
+            self.assertIn("shobr enrich 5550000001", result.stdout)
+
+    def test_review_custom_threshold_quiets_old(self) -> None:
+        """a huge stale_after_days keeps an old package quiet."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="5550000001")
+            seed_tailored_package(data_home)
+            filters_path = data_home.shobr_config / "config.toml"
+            filters_path.write_text(
+                filters_path.read_text(encoding="utf-8").replace(
+                    "stale_after_days = 2",
+                    "stale_after_days = 36500",
+                ),
+                encoding="utf-8",
+            )
+            result = shobr("review", "5550000001", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("Stale:", result.stdout)
+
+    def test_review_bad_threshold_fails_loudly(self) -> None:
+        """a non-integer stale_after_days fails naming the key."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="5550000001")
+            seed_tailored_package(data_home)
+            filters_path = data_home.shobr_config / "config.toml"
+            filters_path.write_text(
+                filters_path.read_text(encoding="utf-8").replace(
+                    "stale_after_days = 2",
+                    'stale_after_days = "soon"',
+                ),
+                encoding="utf-8",
+            )
+            result = shobr("review", "5550000001", env=data_home.env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("stale_after_days", result.stderr)
+
+    def test_stale_threshold_boundary(self) -> None:
+        """2 days old is fresh, 3 days old is stale (default threshold)."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            now = datetime.now(UTC)
+            old = (now - timedelta(days=3)).isoformat(timespec="seconds")
+            edge = (now - timedelta(days=2)).isoformat(timespec="seconds")
+            seed_enrichment_event(data_home, posting_id="5550000011", fetched_at=edge)
+            seed_tailored_package(data_home, posting_id="5550000011")
+            seed_enrichment_event(data_home, posting_id="5550000022", fetched_at=old)
+            _append_event(
+                data_home.shobr_data / "tailoring" / "events.jsonl",
+                {
+                    "tailored_at": "2026-09-13T00:00:00+00:00",
+                    "posting_id": "5550000022",
+                    "slug": "testco-5550000022",
+                    "app_dir": "/tmp/5550000022",
+                    "rewrites": 0,
+                    "resume_md": "seeded resume",
+                    "cover_md": "seeded cover",
+                },
+            )
+
+            result = shobr("review", "5550000011", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("Stale:", result.stdout)
+
+            result = shobr("review", "5550000022", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Stale:", result.stdout)
+
+    def test_next_offers_reenrich_for_stale(self) -> None:
+        """next offers (and on yes runs) re-enrichment for a stale pending row."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            result = shobr("setup", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = f"test-{os.getpid()}-shobr-next-reenrich"
+            detail = _read_fixture("job-detail.html")
+            with FakeLinkedInServer({"/jobs/view/1234567890": detail}) as server:
+                with TestBeachpatrolInstance(data_home.env, profile):
+                    env = {
+                        **data_home.env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+                    result = shobr("next", env=env, input_text="y\n")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("Re-enrich it first?", result.stdout)
+                    self.assertIn("1234567890", result.stdout)
+            rows = json.loads(
+                (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
+            )["rows"]
+            self.assertNotEqual(rows["1234567890"]["enriched_last_at"], "2026-09-13T00:00:00+00:00")
+
+    def test_next_declines_reenrich(self) -> None:
+        """declining the re-enrich offer leaves the stale row untouched."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            env = data_home.env
+            result = shobr("next", env=env, input_text="n\n" * 10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Re-enrich it first?", result.stdout)
+            events = (data_home.shobr_data / "enrichment" / "events.jsonl").read_text()
+            self.assertEqual(len([line for line in events.splitlines() if line]), 1)
+
+    def test_next_offers_reenrich_before_tailoring(self) -> None:
+        """next offers re-enrichment for a stale tailorable row too."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            result = shobr("next", env=env, input_text="n\n" * 10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Re-enrich it first?", result.stdout)
+
+    def test_screen_llm_next_refuses_stale(self) -> None:
+        """screen-llm-next refuses a stale row, naming re-enrich and --force."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            with FakeLLMServer() as llm_server:
+                result = shobr("screen-llm-next", env={**env, **llm_server.env})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("shobr enrich 5550000001", result.stderr)
+                self.assertIn("--force", result.stderr)
+
+    def test_screen_llm_next_force_scores_stale(self) -> None:
+        """screen-llm-next --force scores a stale row quietly."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            with FakeLLMServer() as llm_server:
+                result = shobr("screen-llm-next", "--force", env={**env, **llm_server.env})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Recorded AI review:", result.stdout)
+                self.assertNotIn("Stale:", result.stdout)
+
+    def test_screen_next_refuses_stale(self) -> None:
+        """screen-next refuses a stale row, naming re-enrich and --force."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            env = data_home.env
+            result = shobr("screen-next", env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("shobr enrich 1234567890", result.stderr)
+            self.assertIn("--force", result.stderr)
+
+    def test_screen_next_force_reviews_stale(self) -> None:
+        """screen-next --force records a human review on a stale row."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            env_editor = add_editor_to_env(
+                data_home.env,
+                "SHOBR_SCORE: 4\nSHOBR_REASONING: editor ok\n",
+            )
+            result = shobr("screen-next", "--force", env=env_editor)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events_path = data_home.shobr_data / "screening" / "events.jsonl"
+            events = [json.loads(line) for line in events_path.read_text().splitlines() if line]
+            self.assertEqual(len(events), 1)
+
+    def test_track_warns_stale(self) -> None:
+        """track warns but records on a stale package."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            seed_tailored_package(data_home, posting_id="1234567890")
+            result = shobr("track", "1234567890", "applied", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Stale:", result.stdout)
+            self.assertIn("shobr enrich 1234567890", result.stdout)
+
+    def test_status_marks_stale_pendings(self) -> None:
+        """pending lines flag their own stale counts, each different."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="5550000011")
+            seed_human_review(data_home, posting_id="5550000011", score=5)
+            seed_minimal_lead(data_home, posting_id="5550000022")
+            for pid in ("5550000031", "5550000032"):
+                seed_minimal_lead(data_home, posting_id=pid)
+                seed_human_review(data_home, posting_id=pid, score=5)
+                refresh_enrichment(data_home, posting_id=pid)
+            for pid in ("5550000033", "5550000034"):
+                seed_minimal_lead(data_home, posting_id=pid)
+                seed_human_review(data_home, posting_id=pid, score=5)
+                refresh_enrichment(data_home, posting_id=pid)
+            seed_tailored_package(data_home, posting_id="5550000033")
+            _append_event(
+                data_home.shobr_data / "tailoring" / "events.jsonl",
+                {
+                    "tailored_at": "2026-09-13T00:00:00+00:00",
+                    "posting_id": "5550000034",
+                    "slug": "testco-5550000034",
+                    "app_dir": "/tmp/5550000034",
+                    "rewrites": 0,
+                    "resume_md": "seeded resume",
+                    "cover_md": "seeded cover",
+                },
+            )
+            result = shobr("status", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertRegex(out, r"Pending Screening:\s+1 \(1 stale\)")
+            self.assertRegex(out, r"Pending Tailoring:\s+3 \(1 stale\)")
+            self.assertRegex(out, r"Pending Review:\s+2\n")
+
+    def test_tailor_next_refuses_stale(self) -> None:
+        """tailor-next refuses a stale row instead of building."""
+        with TestDataHome(name="tailor-stale") as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {
+                **data_home.env,
+                **seed_test_profile(data_home),
+                **seed_test_cv(data_home),
+            }
+            seed_human_review(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            with FakeLLMServer() as llm_server:
+                result = shobr("tailor-next", env={**env, **llm_server.env})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("shobr enrich 5550000001", result.stderr)
+                self.assertNotIn("Built package:", result.stdout)
+
+    def test_tailor_next_force_builds_stale(self) -> None:
+        """tailor-next --force builds a stale package quietly."""
+        with TestDataHome(name="tailor-force") as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {
+                **data_home.env,
+                **seed_test_profile(data_home),
+                **seed_test_cv(data_home),
+            }
+            seed_human_review(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            with FakeLLMServer() as llm_server:
+                result = shobr("tailor-next", "--force", env={**env, **llm_server.env})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Built package:", result.stdout)
+                self.assertNotIn("Stale:", result.stdout)
+
+    def test_screen_llm_all_skips_stale(self) -> None:
+        """screen-llm-all skips stale rows with a preflight line."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000011",
+                company="StaleCo",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000022",
+                company="FreshCo",
+                fetched_at="2099-01-01T00:00:00+00:00",
+            )
+            with FakeLLMServer() as llm_server:
+                result = shobr("screen-llm-all", env={**env, **llm_server.env})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("1 of 2 rows to score", result.stdout)
+                self.assertIn("Scored 1 leads.", result.stdout)
+                self.assertIn("FreshCo", result.stdout)
+
+    def test_screen_llm_all_force_scores_stale(self) -> None:
+        """screen-llm-all --force scores stale rows too, fresh first."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000011",
+                company="StaleCo",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000022",
+                company="FreshCo",
+                fetched_at="2099-01-01T00:00:00+00:00",
+            )
+            with FakeLLMServer() as llm_server:
+                result = shobr("screen-llm-all", "--force", env={**env, **llm_server.env})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Scored 2 leads.", result.stdout)
+                self.assertLess(result.stdout.index("FreshCo"), result.stdout.index("StaleCo"))
 
 
 def _test_method_names() -> list[str]:

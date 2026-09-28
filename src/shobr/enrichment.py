@@ -124,6 +124,38 @@ def is_closed(row: EnrichedRow) -> bool:
     return not row["accepting_applications"]
 
 
+def is_stale(row: EnrichedRow, threshold_days: int) -> bool:
+    """Whether the row's last enrichment check is older than the threshold."""
+    checked = datetime.fromisoformat(row["enriched_last_at"])
+    return (datetime.now(UTC) - checked).days > threshold_days
+
+
+def warn_if_stale(row: EnrichedRow, threshold_days: int) -> None:
+    """Print the re-enrich nudge when the row's last check is stale."""
+    if is_stale(row, threshold_days):
+        print(
+            f"  - Stale: last checked over {threshold_days} days ago;"
+            f" consider `shobr enrich {row['posting_id']}` first"
+        )
+
+
+def refuse_if_stale(row: EnrichedRow, threshold_days: int, force: bool) -> None:
+    """Raise ShobrError for a stale row unless forced."""
+    if force or not is_stale(row, threshold_days):
+        return
+    checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
+    raise ShobrError(
+        f"posting {row['posting_id']} last checked {checked}"
+        f" (> {threshold_days} days ago);"
+        f" re-enrich (`shobr enrich {row['posting_id']}`) or pass --force"
+    )
+
+
+def staleness_tag(row: EnrichedRow, threshold_days: int) -> str:
+    """A yellow (STALE) marker, or empty when freshly checked."""
+    return f" {YELLOW}(STALE){RESET}" if is_stale(row, threshold_days) else ""
+
+
 def validity_tag(row: EnrichedRow) -> str:
     """A (CLOSED) marker, a (REJECTED: ...) tag, or empty for passing rows."""
     if is_closed(row):
@@ -260,7 +292,8 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     if not row["accepting_applications"]:
         print("  - no longer accepting applications")
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
-    print(f"  - Last Enriched At: {checked}")
+    threshold = load_config()["stale_after_days"]
+    print(f"  - Last Enriched At: {checked}{staleness_tag(row, threshold)}")
     if short:
         return
     _print_description_block("Description", row["job_description"], truncate=truncate)
