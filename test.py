@@ -3931,6 +3931,39 @@ class TestCLI(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("did not pass the pre-filter", result.stderr)
 
+    def test_next_id_prefers_enrichment_verdict(self) -> None:
+        """'shobr next <id>' proceeds when enrichment passes, even though the
+        discovery card failed (unstructured location, structured Remote)."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            _append_event(
+                data_home.shobr_data / "discovery" / "events.jsonl",
+                {
+                    "fetched_at": "2026-09-13T00:00:00+00:00",
+                    "rows": [
+                        {
+                            "posting_id": "5550000031",
+                            "posting_url": "https://www.linkedin.com/jobs/view/5550000031",
+                            "title": "Test Engineer",
+                            "company": "TestCo",
+                            "location": "Nowhere",
+                        }
+                    ],
+                },
+            )
+            seed_enrichment_event(data_home, posting_id="5550000031")
+            refresh_enrichment(data_home, posting_id="5550000031")
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            with FakeLLMServer() as llm_server:
+                result = shobr(
+                    "next", "5550000031", env={**env, **llm_server.env}, input_text="l\n"
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+            events_path = data_home.shobr_data / "screening" / "events.jsonl"
+            events = [json.loads(line) for line in events_path.read_text().splitlines() if line]
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["score"], 4)
+
     def test_next_id_declined_enrich(self) -> None:
         """'shobr next <id>' declining the enrich prompt does nothing."""
         with TestDataHome() as data_home:

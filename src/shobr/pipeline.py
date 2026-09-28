@@ -401,8 +401,6 @@ def _run_next_for_id(posting_id: str) -> None:
     lead = next((row for row in leads if row["posting_id"] == posting_id), None)
     if lead is None:
         raise ShobrError(f"posting {posting_id} not found in leads store")
-    if not lead["actionable"]:
-        raise ShobrError(f"posting {posting_id} did not pass the pre-filter")
     enriched_rows = {row["posting_id"]: row for row in enriched}
     if posting_id not in enriched_rows:
         if _confirm(
@@ -414,7 +412,8 @@ def _run_next_for_id(posting_id: str) -> None:
         print(f"nothing to do for {posting_id}")
         return
     if not enriched_rows[posting_id]["actionable"]:
-        raise ShobrError(f"posting {posting_id} did not pass the pre-filter")
+        reason = enriched_rows[posting_id]["rejected_reason"] or "unknown reason"
+        raise ShobrError(f"posting {posting_id} did not pass the pre-filter ({reason})")
 
     sr = screened.get(posting_id)
     if sr is None or sr["human"] is None:
