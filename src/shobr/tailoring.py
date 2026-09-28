@@ -1,6 +1,7 @@
 """The tailoring stage: build per-job application packages via a CV toolchain."""
 
 import re
+import sys
 import textwrap
 from datetime import UTC, datetime
 from typing import NoReturn, TypedDict, cast
@@ -32,6 +33,7 @@ from .cv_toolchain import (
 from .enrichment import (
     EnrichedRow,
     get_enriched_rows,
+    is_stale,
     project_enrichment,
     refuse_if_stale,
     staleness_tag,
@@ -400,3 +402,47 @@ def tailor_next(print_prompt: bool, force: bool = False) -> None:
         print("nothing to tailor")
         return
     _run_tailor_for_row(row, print_prompt, force)
+
+
+def tailor_all(force: bool = False) -> None:
+    """Build packages for every pursue row with no package yet.
+
+    Skips stale rows unless forced. Fails when nothing was built.
+    """
+    rows = get_enriched_rows()
+    threshold = load_config()["stale_after_days"]
+    screened = project_screening()["rows"]
+    pending = [
+        row
+        for row in rows.values()
+        if (sr := screened.get(row["posting_id"])) is not None
+        and sr["decision"] == ReviewDecision.PURSUE
+        and row["posting_id"] not in project_tailoring()["rows"]
+        and row["actionable"]
+    ]
+    skipped = sorted(row["posting_id"] for row in pending if not force and is_stale(row, threshold))
+    if skipped:
+        print(
+            f"{len(skipped)} of {len(pending)} rows to tailor were last checked over"
+            f" {threshold} days ago; skipping stale rows"
+            + ("" if force else " (pass --force to build them anyway)")
+        )
+    ordered = sorted(
+        (row for row in pending if force or row["posting_id"] not in skipped),
+        key=lambda row: is_stale(row, threshold),
+    )
+    built = 0
+    failed: list[str] = []
+    for row in ordered:
+        try:
+            _run_tailor_for_row(row, False, force)
+        except ShobrError as exc:
+            print(exc, file=sys.stderr)
+            failed.append(row["posting_id"])
+        else:
+            built += 1
+    print(f"Built {built} packages.")
+    if failed:
+        raise ShobrError(f"Failed to tailor {len(failed)}: {', '.join(failed)}")
+    if built == 0 and skipped:
+        raise ShobrError(f"All {len(skipped)} pending rows stale; re-enrich first or pass --force")

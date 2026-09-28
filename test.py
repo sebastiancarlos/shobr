@@ -3379,6 +3379,70 @@ class TestCLI(unittest.TestCase):
                 )
                 self.assertEqual(status.stdout.strip(), "")
 
+    def test_tailor_all_builds_packages(self) -> None:
+        """tailor-all builds every pursue package with no package yet."""
+        with TestDataHome(name="tailor-all") as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {
+                **data_home.env,
+                **seed_test_profile(data_home),
+                **seed_test_cv(data_home),
+            }
+            seed_human_review(data_home)
+            seed_minimal_lead(data_home, posting_id="5550000011")
+            seed_human_review(data_home, posting_id="5550000011", score=5)
+            refresh_enrichment(data_home, posting_id="5550000011")
+            with FakeLLMServer() as llm_server:
+                result = shobr("tailor-all", env={**env, **llm_server.env})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Built 2 packages.", result.stdout)
+            tailored = json.loads(
+                (data_home.shobr_data / "tailoring" / "tailoring.json").read_text()
+            )
+            self.assertEqual(set(tailored["rows"]), {"5550000001", "5550000011"})
+
+    def test_tailor_all_skips_stale(self) -> None:
+        """tailor-all skips stale rows with a preflight line."""
+        with TestDataHome(name="tailor-all-stale") as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {
+                **data_home.env,
+                **seed_test_profile(data_home),
+                **seed_test_cv(data_home),
+            }
+            seed_human_review(data_home)
+            seed_minimal_lead(data_home, posting_id="5550000011")
+            seed_human_review(data_home, posting_id="5550000011", score=5)
+            with FakeLLMServer() as llm_server:
+                result = shobr("tailor-all", env={**env, **llm_server.env})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("1 of 2 rows", result.stdout)
+                self.assertIn("Built 1 packages.", result.stdout)
+            tailored = json.loads(
+                (data_home.shobr_data / "tailoring" / "tailoring.json").read_text()
+            )
+            self.assertEqual(set(tailored["rows"]), {"5550000001"})
+
+    def test_tailor_all_force_builds_stale(self) -> None:
+        """tailor-all --force builds stale packages too."""
+        with TestDataHome(name="tailor-all-force") as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {
+                **data_home.env,
+                **seed_test_profile(data_home),
+                **seed_test_cv(data_home),
+            }
+            seed_human_review(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            with FakeLLMServer() as llm_server:
+                result = shobr("tailor-all", "--force", env={**env, **llm_server.env})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Built 1 packages.", result.stdout)
+
     def test_tailor_garbage_reply_builds_nothing(self) -> None:
         """tailor (live) on an unparseable reply writes nothing: no app dir,
         no events."""

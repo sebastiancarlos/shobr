@@ -21,7 +21,7 @@ from .screening import (
     screen_next,
     screen_posting_id,
 )
-from .tailoring import print_tailored, tailor_next, tailor_posting_id
+from .tailoring import print_tailored, tailor_all, tailor_next, tailor_posting_id
 from .tracking import (
     TrackStatus,
     print_tracked,
@@ -165,6 +165,11 @@ def main() -> None:
     )
     _force_arg(_print_prompt_arg(tailor_next_parser, plural=True))
 
+    tailor_all_parser = sub.add_parser(
+        "tailor-all", help="build packages for every pursue row with no package yet"
+    )
+    _force_arg(tailor_all_parser)
+
     sub.add_parser(
         "tracked",
         help="print the tracking store with per-status breakdown",
@@ -239,6 +244,7 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         "tailored": print_tailored,
         "tailor": lambda: tailor_posting_id(args.posting_id, args.print_prompt, args.force),
         "tailor-next": lambda: tailor_next(args.print_prompt, args.force),
+        "tailor-all": lambda: tailor_all(args.force),
         "tracked": print_tracked,
         "track": lambda: track_posting_id(args.posting_id, args.status, args.note),
         "review": lambda: review_posting_id(args.posting_id),

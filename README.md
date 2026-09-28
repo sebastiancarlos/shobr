@@ -220,6 +220,8 @@ if it overflows.
 - **`shobr tailor-next`**
   - Builds the application package (Resume + Cover Letter) for the next
     pursue-able job.
+- **`shobr tailor-all`**
+  - Builds packages for every pursue-able job without one.
 - **`shobr tailored`**
   - Prints all generated packages.
 
