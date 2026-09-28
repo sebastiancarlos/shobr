@@ -2274,6 +2274,47 @@ class TestCLI(unittest.TestCase):
                     )
                     self.assertIn("- no longer accepting applications x1", result.stdout)
 
+    def test_enrich_posting_id_closed_variant(self) -> None:
+        """'shobr enrich <posting_id>' on the 'Not currently...' closed variant."""
+        search = _read_fixture("job-search.html")
+        detail = _read_fixture("job-detail-closed-variant.html")
+
+        profile = f"test-{os.getpid()}-shobr-enrich-closed-variant"
+        with TestDataHome(name="enrich-closed-variant") as data_home:
+            env = data_home.env
+            result = shobr("setup", env=env)
+            seed_test_config(data_home)
+
+            with FakeLinkedInServer(
+                {"/jobs/search-results": search, "/jobs/view/5550000002": detail}
+            ) as server:
+                with TestBeachpatrolInstance(env, profile):
+                    env = {
+                        **env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+
+                    result = shobr("discover", env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+                    result = shobr("enrich", "5550000002", env=env)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(
+                        "[FakeCo] 5550000002 (REJECTED: no longer accepting applications)",
+                        result.stdout,
+                    )
+
+                    events_path = data_home.shobr_data / "enrichment" / "events.jsonl"
+                    events = [
+                        json.loads(line) for line in events_path.read_text().splitlines() if line
+                    ]
+                    self.assertEqual(len(events), 1)
+                    event = events[0]
+                    self.assertFalse(event["accepting_applications"])
+                    self.assertIsNone(event["apply_method"])
+                    self.assertIsNone(event["apply_url"])
+
     def test_enriched_prints_stored_rows(self) -> None:
         """'shobr enriched' prints the projected enrichment store, one row per
         enriched lead, reusing the enrich-next output format."""

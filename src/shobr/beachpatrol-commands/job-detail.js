@@ -100,11 +100,16 @@ export default async ({ context }, url) => {
         ) || null;
       const salary_range = pillLabels.find((p) => /^\$/.test(p)) || null;
 
-      // get application info
-      const closedBanner = [...document.querySelectorAll('[aria-atomic="true"]')].find((el) =>
-        (el.textContent || "").includes("No longer accepting applications")
+      // get application info (match known message variants)
+      const CLOSED_MESSAGE = /(No longer|Not currently) accepting applications/i;
+      const outsideDescriptions = (el) => !el.closest('[data-testid="expandable-text-box"]');
+      const closedBanner = [...document.querySelectorAll('[aria-atomic="true"]')]
+        .filter(outsideDescriptions)
+        .find((el) => CLOSED_MESSAGE.test(el.textContent || ""));
+      const closedNotice = [...document.querySelectorAll('[id="signal-notice-small"]')].find(
+        (icon) => CLOSED_MESSAGE.test(icon.parentElement?.textContent || "")
       );
-      const accepting_applications = !closedBanner;
+      const accepting_applications = !closedBanner && !closedNotice;
       let apply_method = null;
       let apply_url = null;
       if (accepting_applications) {
