@@ -308,17 +308,14 @@ def _enrich_one(target: StoredJob) -> None:
 
     job_description = _html_to_markdown(detail["job_description_html"])
     company_description = _html_to_markdown(detail["company_description_html"])
-    if (
-        job_description is None
-        or company_description is None
-        or not job_description.strip()
-        or not company_description.strip()
-    ):
+    if job_description is None or not job_description.strip():
         raise ShobrError(
             f"parsed no description for posting {target['posting_id']}; "
             "the LinkedIn job detail page structure may have changed, "
             "refusing to record an empty enrichment"
         )
+    if company_description is None:
+        company_description = ""
 
     # persist event
     fetched_at = datetime.now(UTC)

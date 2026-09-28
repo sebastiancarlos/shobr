@@ -2095,6 +2095,43 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(event["apply_method"], "easy_apply")
                     self.assertIsNone(event["apply_url"])
 
+    def test_enrich_posting_id_missing_company_module(self) -> None:
+        """'shobr enrich' on a page without an 'About the company' module
+        records with a blank company description instead of refusing."""
+        detail = _read_fixture("job-detail-no-company.html")
+
+        profile = f"test-{os.getpid()}-shobr-enrich-no-company"
+        with TestDataHome(name="enrich-no-company") as data_home:
+            env = data_home.env
+            result = shobr("setup", env=env)
+            seed_test_config(data_home)
+
+            search = _search_page(("5550000007", "Backend Engineer", "PayCo", "Remote"))
+            with FakeLinkedInServer(
+                {"/jobs/search-results": search, "/jobs/view/5550000007": detail}
+            ) as server:
+                with TestBeachpatrolInstance(env, profile):
+                    env = {
+                        **env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+
+                    result = shobr("discover", env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+                    result = shobr("enrich", "5550000007", env=env)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("[PayCo] 5550000007", result.stdout)
+                    self.assertNotIn("REJECTED", result.stdout)
+
+                    events_path = data_home.shobr_data / "enrichment" / "events.jsonl"
+                    events = [
+                        json.loads(line) for line in events_path.read_text().splitlines() if line
+                    ]
+                    self.assertEqual(len(events), 1)
+                    self.assertEqual(events[0]["company_description"], "")
+
     def test_enrich_posting_id_extracts_salary(self) -> None:
         """'shobr enrich <posting_id>' on a synthetic pay-bearing page records
         the salary range plus the workplace/employment pills."""
