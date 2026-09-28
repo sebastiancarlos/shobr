@@ -15,7 +15,7 @@ https://github.com/user-attachments/assets/47336c4f-1ca8-40e4-869d-5496bf7fae53
 ## Introduction
 
 In 2026's job market, there are many job application automation tools, some of
-them FOSS. This one's mine, and relies on these tools:
+them FOSS. This one's mine, and relies on:
 
 - [`beachpatrol`](https://github.com/sebastiancarlos/beachpatrol) for browser
   automation of your _own daily-driver browser_, and
