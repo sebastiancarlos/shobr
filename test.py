@@ -4103,6 +4103,98 @@ class TestCLI(unittest.TestCase):
             self.assertIn("5: 1 (1 to tailor)", result.stdout)
             self.assertIn("3: 1\n", result.stdout)
 
+    def test_status_omits_invalidated_tailoring(self) -> None:
+        """status stops counting a pursue row closed by a later enrichment."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            result = shobr("status", env=env)
+            self.assertRegex(_strip_ansi(result.stdout), r"Pending Tailoring:\s+1")
+
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("status", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(_strip_ansi(result.stdout), r"Pending Tailoring:\s+0")
+
+    def test_next_skips_invalidated_tailoring(self) -> None:
+        """next stops offering tailor for a pursue row closed by re-enrichment."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            result = shobr("next", env=env, input_text="n\n" * 10)
+            self.assertIn("Tailor oldest", result.stdout)
+
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("next", env=env, input_text="n\n" * 10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("Tailor oldest", result.stdout)
+
+    def test_tailor_next_reports_invalidated(self) -> None:
+        """tailor-next finds nothing to do once the pursue row is closed."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("tailor-next", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("nothing to tailor", result.stdout)
+
+    def test_review_next_skips_invalidated(self) -> None:
+        """review-next skips a packaged row closed by a later enrichment."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+            result = shobr("review-next", env=env)
+            self.assertIn("FakeCo", result.stdout)
+
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("review-next", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("nothing to review", result.stdout)
+
+    def test_screen_refuses_invalidated_with_reason(self) -> None:
+        """screening a closed row names the closure reason, not just the gate."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("screen", "5550000001", "5", "--reason", "x", env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "did not pass the pre-filter (no longer accepting applications)",
+                result.stderr,
+            )
+
 
 def _test_method_names() -> list[str]:
     """TestCLI method names in unittest's default (alphabetical) order."""

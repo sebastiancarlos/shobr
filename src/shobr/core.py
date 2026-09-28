@@ -228,7 +228,8 @@ def _row_at_stage(posting_id: str, stage: Gate) -> tuple[EnrichedRow | None, str
     if row is None:
         return None, f"posting {posting_id} not found in enrichment store"
     if not row["pass_filter"]:
-        return None, f"posting {posting_id} did not pass the pre-filter"
+        reason = row["rejected_reason"] or "unknown reason"
+        return None, f"posting {posting_id} did not pass the pre-filter ({reason})"
     if stage in ("pursuable", "tailorable"):
         from .screening import ReviewDecision, project_screening
 

@@ -205,8 +205,9 @@ def review_next() -> None:
     tracking event yet."""
     require_events(DataKind.TAILORING)
     tracked = project_tracking()["rows"]
+    passing = {pid for pid, row in project_enrichment()["rows"].items() if row["pass_filter"]}
     for posting_id, row in project_tailoring()["rows"].items():
-        if posting_id in tracked:
+        if posting_id in tracked or posting_id not in passing:
             continue
         _print_review(row)
         return

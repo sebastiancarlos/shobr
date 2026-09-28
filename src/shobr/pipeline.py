@@ -80,18 +80,24 @@ def _pending_ai_screening(
     )
 
 
-def _pending_tailoring(screened: dict[str, ScreeningRow], tailored_ids: set[str]) -> int:
-    """Pursue rows with no package yet."""
+def _pending_tailoring(
+    screened: dict[str, ScreeningRow], tailored_ids: set[str], enriched: list[EnrichedRow]
+) -> int:
+    """Pursue rows with no package yet, still passing enrichment."""
+    passing = {row["posting_id"] for row in enriched if row["pass_filter"]}
     return sum(
         1
         for pid, sr in screened.items()
-        if sr["decision"] == ReviewDecision.PURSUE and pid not in tailored_ids
+        if sr["decision"] == ReviewDecision.PURSUE and pid not in tailored_ids and pid in passing
     )
 
 
-def _pending_review(tailored_ids: set[str], tracked_ids: set[str]) -> int:
-    """Packaged postings with no tracking event yet."""
-    return sum(1 for pid in tailored_ids if pid not in tracked_ids)
+def _pending_review(
+    tailored_ids: set[str], tracked_ids: set[str], enriched: list[EnrichedRow]
+) -> int:
+    """Packaged postings with no tracking event yet, still passing enrichment."""
+    passing = {row["posting_id"] for row in enriched if row["pass_filter"]}
+    return sum(1 for pid in tailored_ids if pid not in tracked_ids and pid in passing)
 
 
 def print_status() -> None:
@@ -172,14 +178,18 @@ def print_status() -> None:
                 ("Skipped:", skip, RED),
                 ("Lacking LLM Review:", lacking_llm, YELLOW),
                 ("Pending Human Review:", pending_human, YELLOW),
-                ("Pending Tailoring:", _pending_tailoring(screened, set(tailored)), GREEN),
+                (
+                    "Pending Tailoring:",
+                    _pending_tailoring(screened, set(tailored), enriched),
+                    GREEN,
+                ),
             ],
         ),
         (
             "TAILORING",
             [
                 ("Packages Built:", len(tailored), BLUE),
-                ("Pending Review:", _pending_review(set(tailored), set(tracked)), GREEN),
+                ("Pending Review:", _pending_review(set(tailored), set(tracked), enriched), GREEN),
             ],
         ),
         (
@@ -275,7 +285,7 @@ def _run_next() -> None:
             screen_next(None, None)
             return
 
-    if pending := _pending_tailoring(screened, set(tailored)):
+    if pending := _pending_tailoring(screened, set(tailored), enriched):
         print(f"{pending} pursue rows awaiting tailoring.")
         if _confirm(
             f"Tailor oldest screened lead? ({BLUE}shobr tailor-next{RESET}) {BOLD}[y/N]{RESET} "
@@ -283,7 +293,7 @@ def _run_next() -> None:
             tailor_next(False)
             return
 
-    if _pending_review(set(tailored), set(tracked)):
+    if _pending_review(set(tailored), set(tracked), enriched):
         review_next()
         return
 
