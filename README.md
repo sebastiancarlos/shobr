@@ -4,7 +4,7 @@
   <img src="docs/logo.png" alt="shobr" width="70%">
 </p>
 
-**The stealthiest, UNIX-iest, ethical Job Search Automator, with a
+**The stealthiest, UNIX-iest, Job Search Automator, with a
 Hacker-in-the-Loop approach.**
 
 ![shobr](https://github.com/sebastiancarlos/shobr/actions/workflows/ci.yml/badge.svg)
@@ -34,14 +34,15 @@ them FOSS. This one's mine, and relies on these tools:
   drafts and builds the PDFs, but the final application submit is always done
   by you. This is _no "spray and pray"_, but you can still pray to any
   API-compatible deities.
-- **Provider-Agnostic AI:** Uses one thin LLM abstraction. Run it on OpenAI,
-  Anthropic, a local model, or hijack a local LLM agent subscription via
-  [`faaah`](https://github.com/sebastiancarlos/faaah).
 - **LLM-light By Design:** Automated, high-quality tuning of resume to job
   requires some LLM, there's not much leeway around it. But this project uses
   _as little LLM as possible_, and _doesn't demand an Agent driver_ (like
   other projects in this space). If you want more, it should be trivial to ask
   an LLM to write a SKILL or an MCP server on top of SHOBR.
+- **LLM-provider-Agnostic:** Uses an LLM abstraction
+  ([`any-llm`](https://github.com/mozilla-ai/any-llm)). So, you can run
+  SHOBR's LLM steps on OpenAI, Anthropic, a local model, or hijack a local LLM
+  agent subscription via [`faaah`](https://github.com/sebastiancarlos/faaah).
 - **Event-Sourced Data:** All data (discovered jobs, screenings, tracking) is
   saved in append-only JSONL event logs and projected into state files. You
   can interrupt the pipeline, or recompute lead approval with new rules, at
