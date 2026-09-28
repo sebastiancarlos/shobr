@@ -30,7 +30,7 @@ from .cv_toolchain import (
     ensure_worktree_clean,
     git_commit,
 )
-from .enrichment import EnrichedRow, get_enriched_rows, project_enrichment
+from .enrichment import EnrichedRow, get_enriched_rows, project_enrichment, validity_tag
 from .screening import (
     PROFILE_FILES,
     TAILOR_FILES,
@@ -53,12 +53,11 @@ class TailoringRow(TypedDict):
     rewrites: int
     resume_md: str
     cover_md: str
+    tailored_at: str
 
 
 class TailorEvent(TailoringRow):
     """A completed tailor package build."""
-
-    tailored_at: str
 
 
 class TailoredStore(TypedDict):
@@ -94,6 +93,7 @@ def project_tailoring() -> TailoredStore:
             rewrites=event["rewrites"],
             resume_md=event["resume_md"],
             cover_md=event["cover_md"],
+            tailored_at=event["tailored_at"],
         )
     return {"tailored_at": events[-1]["tailored_at"], "rows": rows}
 
@@ -110,7 +110,7 @@ def print_tailored() -> None:
         enriched = project_enrichment()
         for row in tailored["rows"].values():
             eref = enriched["rows"][row["posting_id"]]
-            print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}")
+            print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")
             print(f"  - Slug: {row['slug']}")
             print(f"  - App dir: {short_path(row['app_dir'])}")
@@ -118,6 +118,10 @@ def print_tailored() -> None:
                 f"  - Rewrites: {GREEN if row['rewrites'] == 0 else YELLOW}{row['rewrites']}{RESET}"
             )
             print(stage_line(row["posting_id"], DataKind.TAILORING))
+            checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
+            print(f"  - Last Enriched At: {checked}")
+            built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
+            print(f"  - Tailored At: {built}")
 
         print()
 

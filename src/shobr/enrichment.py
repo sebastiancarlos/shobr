@@ -16,6 +16,7 @@ from .core import (
     EmploymentType,
     LocationType,
     ShobrError,
+    closed_tag,
     paged,
     persist_event,
     read_events,
@@ -64,7 +65,7 @@ class EnrichedRow(EnrichmentEvent):
     """An enrichment as projected into enrichment.json (latest attempt wins)."""
 
     enriched_last_at: str
-    pass_filter: bool
+    actionable: bool
     rejected_reason: str | None
 
 
@@ -111,11 +112,26 @@ def project_enrichment() -> EnrichedStore:
             {
                 **row,
                 "enriched_last_at": row["fetched_at"],
-                "pass_filter": rejected_reason is None,
+                "actionable": rejected_reason is None,
                 "rejected_reason": rejected_reason,
             },
         )
     return {"fetched_at": events[-1]["fetched_at"], "rows": rows}
+
+
+def is_closed(row: EnrichedRow) -> bool:
+    """Whether the latest enrichment found the posting closed."""
+    return not row["accepting_applications"]
+
+
+def validity_tag(row: EnrichedRow) -> str:
+    """A (CLOSED) marker, a (REJECTED: ...) tag, or empty for passing rows."""
+    if is_closed(row):
+        return closed_tag()
+    if not row["actionable"]:
+        assert row["rejected_reason"] is not None
+        return rejected_tag(row["rejected_reason"])
+    return ""
 
 
 def get_enriched_rows() -> dict[str, EnrichedRow]:
@@ -127,7 +143,7 @@ def get_enriched_rows() -> dict[str, EnrichedRow]:
 def _next_lead_to_enrich(leads: DiscoveredStore, enriched: EnrichedStore) -> StoredJob | None:
     """The oldest lead not yet enriched."""
     for row in reversed(leads["rows"]):
-        if not row["pass_filter"]:
+        if not row["actionable"]:
             continue
         if row["posting_id"] in enriched["rows"]:
             continue
@@ -227,7 +243,7 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     cap each description block at its first line (for multi-row listings).
     """
     tag = ""
-    if not row["pass_filter"]:
+    if not row["actionable"]:
         assert row["rejected_reason"] is not None
         tag = rejected_tag(row["rejected_reason"])
     print(f"[{row['company']}] {row['posting_id']}{tag}")
@@ -243,6 +259,8 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     print_apply_block(row)
     if not row["accepting_applications"]:
         print("  - no longer accepting applications")
+    checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
+    print(f"  - Last Enriched At: {checked}")
     if short:
         return
     _print_description_block("Description", row["job_description"], truncate=truncate)
@@ -330,7 +348,7 @@ def print_enriched() -> None:
         enriched = project_enrichment()
 
         rows = enriched["rows"].values()
-        rejected_count = sum(1 for row in rows if not row["pass_filter"])
+        rejected_count = sum(1 for row in rows if not row["actionable"])
         print(
             f"{GREEN}{len(enriched['rows'])}{RESET} enriched "
             f"({RED}{rejected_count}{RESET} rejected)"

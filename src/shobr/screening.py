@@ -33,6 +33,7 @@ from .enrichment import (
     get_enriched_rows,
     print_enriched_row,
     project_enrichment,
+    validity_tag,
 )
 
 _PROFILE_DIR = SHOBR_CONFIG_DIR / "profile"
@@ -429,13 +430,20 @@ def print_screened(score_filter: str | None = None) -> None:
         enriched = project_enrichment()
         for row in rows:
             eref = enriched["rows"][row["posting_id"]]
-            print(f"[{eref['company']}] {row['posting_id']}")
+            print(f"[{eref['company']}] {row['posting_id']}{validity_tag(eref)}")
             pills = pill_line(eref)
             print(f"  - {eref['title']}")
             if pills:
                 print(f"  - {pills}")
             print_screening_status(row, "  ")
             print(stage_line(row["posting_id"], DataKind.SCREENING))
+            checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
+            print(f"  - Last Enriched At: {checked}")
+            scored = [
+                review["scored_at"] for review in (row["human"], row["ai"]) if review is not None
+            ]
+            reviewed = datetime.fromisoformat(max(scored)).date().isoformat()
+            print(f"  - Reviewed At: {reviewed}")
 
         print()
 
@@ -525,12 +533,14 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
 - Score: {ai["score"]}
 {labeled_block("- Reasoning:", ai["reasoning"])}
 """
+    checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
     return render_template(
         "editor-screening.md",
         company=row["company"],
         posting_id=row["posting_id"],
         title=row["title"],
         pills=pills,
+        checked=checked,
         apply_lines=apply_lines,
         ai_lines=ai_lines,
         job_description=row["job_description"],
@@ -629,7 +639,7 @@ def _oldest_missing_review(
     AI scoring is refused once a human reviewed, so it's never returned.
     """
     for row in rows.values():
-        if not row["pass_filter"]:
+        if not row["actionable"]:
             continue
         if row["posting_id"] in exclude:
             continue

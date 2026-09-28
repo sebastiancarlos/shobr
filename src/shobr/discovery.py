@@ -46,7 +46,7 @@ class StoredJob(JobRow):
     """Job as stored, with first-sighting metadata and pre-filtering"""
 
     first_seen_at: str
-    pass_filter: bool
+    actionable: bool
     rejected_reason: str | None
 
 
@@ -125,7 +125,7 @@ def project_discovery() -> DiscoveredStore:
                 {
                     **latest[posting_id],
                     "first_seen_at": first_seen[posting_id],
-                    "pass_filter": rejected_reason is None,
+                    "actionable": rejected_reason is None,
                     "rejected_reason": rejected_reason,
                 },
             )
@@ -137,7 +137,7 @@ def project_discovery() -> DiscoveredStore:
 def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None = None) -> None:
     """Print the projected leads store. First seen in `mark_new_from` get `(NEW)`."""
     with paged():
-        rejected_count = sum(1 for row in leads["rows"] if not row["pass_filter"])
+        rejected_count = sum(1 for row in leads["rows"] if not row["actionable"])
         if mark_new_from:
             new_count = sum(1 for row in leads["rows"] if row["first_seen_at"] == mark_new_from)
             print(
@@ -156,13 +156,15 @@ def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None =
                 if mark_new_from and row["first_seen_at"] == mark_new_from
                 else ""
             )
-            if not row["pass_filter"]:
+            if not row["actionable"]:
                 assert row["rejected_reason"] is not None
                 tag += rejected_tag(row["rejected_reason"])
             print(f"[{row['company']}]{tag}")
             print(f"  - {row['title']}")
             print(f"  - {row['location']}")
             print(f"  - {row['posting_url']}")
+            seen = datetime.fromisoformat(row["first_seen_at"]).date().isoformat()
+            print(f"  - First Discovered At: {seen}")
             print(stage_line(row["posting_id"], DataKind.DISCOVERY))
 
         reasons = Counter(

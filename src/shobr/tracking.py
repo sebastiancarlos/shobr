@@ -16,7 +16,7 @@ from .core import (
     short_path,
     store_path,
 )
-from .enrichment import get_enriched_rows, print_apply_block, project_enrichment
+from .enrichment import get_enriched_rows, print_apply_block, project_enrichment, validity_tag
 from .screening import pill_line, print_screening_status, project_screening
 from .tailoring import TailoringRow, project_tailoring
 
@@ -139,11 +139,13 @@ def print_tracked() -> None:
         enriched = project_enrichment()
         for row in tracked["rows"].values():
             eref = enriched["rows"][row["posting_id"]]
-            print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}")
+            print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")
             color = TRACK_STATUS_COLORS[row["status"]]
             print(f"  - Status: {color}{str(row['status']).upper()}{RESET}")
-            print(f"  - Date: {datetime.fromisoformat(row['tracked_at']).date().isoformat()}")
+            print(f"  - Tracked At: {datetime.fromisoformat(row['tracked_at']).date().isoformat()}")
+            checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
+            print(f"  - Last Enriched At: {checked}")
             if row["note"]:
                 print(f"  - Note: {row['note']}")
 
@@ -158,8 +160,12 @@ def _print_review(row: TailoringRow) -> None:
         eref = rows.get(row["posting_id"])
         if eref is None:
             raise ShobrError(f"posting {row['posting_id']} not found in enrichment store")
-        print(f"[{eref['company']}] {row['posting_id']}")
+        print(f"[{eref['company']}] {row['posting_id']}{validity_tag(eref)}")
         print(f"  - {eref['title']}")
+        checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
+        print(f"  - Last Enriched At: {checked}")
+        built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
+        print(f"  - Tailored At: {built}")
         pills = pill_line(eref)
         if pills:
             print(f"  - {pills}")
@@ -205,7 +211,7 @@ def review_next() -> None:
     tracking event yet."""
     require_events(DataKind.TAILORING)
     tracked = project_tracking()["rows"]
-    passing = {pid for pid, row in project_enrichment()["rows"].items() if row["pass_filter"]}
+    passing = {pid for pid, row in project_enrichment()["rows"].items() if row["actionable"]}
     for posting_id, row in project_tailoring()["rows"].items():
         if posting_id in tracked or posting_id not in passing:
             continue

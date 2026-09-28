@@ -200,6 +200,11 @@ def rejected_tag(reason: str) -> str:
     return f" {RED}(REJECTED: {inner}){RESET}"
 
 
+def closed_tag() -> str:
+    """A red (CLOSED) marker for rows whose latest enrichment found them closed."""
+    return f" {RED}(CLOSED){RESET}"
+
+
 def reasons_line(reason: str, count: int) -> str:
     """A rejection breakdown line with the quoted span and count in red."""
     match = re.search(r"'[^']*'", reason)
@@ -227,7 +232,7 @@ def _row_at_stage(posting_id: str, stage: Gate) -> tuple[EnrichedRow | None, str
     row = rows.get(posting_id)
     if row is None:
         return None, f"posting {posting_id} not found in enrichment store"
-    if not row["pass_filter"]:
+    if not row["actionable"]:
         reason = row["rejected_reason"] or "unknown reason"
         return None, f"posting {posting_id} did not pass the pre-filter ({reason})"
     if stage in ("pursuable", "tailorable"):

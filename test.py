@@ -475,7 +475,7 @@ def _build_snapshot(
             rows = json.loads((snapshot / "enrichment" / "enrichment.json").read_text())["rows"]
             for posting_id, passing in expect_enriched.items():
                 row = rows.get(posting_id)
-                if row is None or row["pass_filter"] != passing:
+                if row is None or row["actionable"] != passing:
                     raise AssertionError(
                         f"snapshot {name} missing "
                         f"{'passing' if passing else 'rejected'} {posting_id}"
@@ -1412,7 +1412,7 @@ class TestCLI(unittest.TestCase):
                     self.assertTrue(
                         all(
                             set(row)
-                            == raw_keys | {"first_seen_at", "pass_filter", "rejected_reason"}
+                            == raw_keys | {"first_seen_at", "actionable", "rejected_reason"}
                             for row in leads["rows"]
                         )
                     )
@@ -1421,9 +1421,9 @@ class TestCLI(unittest.TestCase):
                         self.assertEqual(row["first_seen_at"], event["fetched_at"])
 
                     rejected = {
-                        row["posting_id"]: row for row in leads["rows"] if not row["pass_filter"]
+                        row["posting_id"]: row for row in leads["rows"] if not row["actionable"]
                     }
-                    passing = [row for row in leads["rows"] if row["pass_filter"]]
+                    passing = [row for row in leads["rows"] if row["actionable"]]
                     self.assertTrue(rejected, "expected some jobs to fail the pre-filter")
                     self.assertTrue(passing, "expected some jobs to pass the pre-filter")
                     self.assertTrue(all(row["rejected_reason"] for row in rejected.values()))
@@ -1532,7 +1532,7 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(len(leads_2["rows"]), len(first_batch) + len(new_ids))
                     self.assertTrue(
                         all(
-                            "pass_filter" in row and "rejected_reason" in row
+                            "actionable" in row and "rejected_reason" in row
                             for row in leads_2["rows"]
                         )
                     )
@@ -1823,6 +1823,7 @@ class TestCLI(unittest.TestCase):
             result = shobr("discovered", env=env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("  - Stage: enrichment", result.stdout)
+            self.assertIn("First Discovered At: 2026-09-13", result.stdout)
 
             seed_human_review(data_home, posting_id="1234567890")
             result = shobr("discovered", env=env)
@@ -2252,7 +2253,7 @@ class TestCLI(unittest.TestCase):
                     enriched_path = data_home.shobr_data / "enrichment" / "enrichment.json"
                     projected = json.loads(enriched_path.read_text())
                     row = projected["rows"]["5550000002"]
-                    self.assertFalse(row["pass_filter"])
+                    self.assertFalse(row["actionable"])
                     self.assertEqual(row["rejected_reason"], "no longer accepting applications")
 
                     result = shobr("enriched", env=env)
@@ -3536,7 +3537,7 @@ class TestCLI(unittest.TestCase):
             seed_tracking(data_home)
             result = shobr("tracked", env=data_home.env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("Date: 2026-09-13", result.stdout)
+            self.assertIn("Tracked At: 2026-09-13", result.stdout)
 
     def test_tracked_with_no_data(self) -> None:
         """'shobr tracked' on a fresh data home fails, writes nothing."""
@@ -3797,7 +3798,7 @@ class TestCLI(unittest.TestCase):
                         (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
                     )
                     self.assertIn("5550000001", enriched["rows"])
-                    self.assertTrue(enriched["rows"]["5550000001"]["pass_filter"])
+                    self.assertTrue(enriched["rows"]["5550000001"]["actionable"])
 
     def test_next_scores_with_llm_on_l(self) -> None:
         """'shobr next' answering l at screening records an AI review."""
@@ -4194,6 +4195,267 @@ class TestCLI(unittest.TestCase):
                 "did not pass the pre-filter (no longer accepting applications)",
                 result.stderr,
             )
+
+    def test_screened_flags_closed(self) -> None:
+        """screened tags a row closed by a later enrichment with (CLOSED)."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            result = shobr("screened", env=env)
+            self.assertNotIn("(CLOSED)", result.stdout)
+
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("screened", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("(CLOSED)", result.stdout)
+
+    def test_screened_closed_takes_precedence_over_filtered(self) -> None:
+        """a both-closed-and-filtered row shows (CLOSED), never (REJECTED:)."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            filters_path = data_home.shobr_config / "config.toml"
+            with filters_path.open("a", encoding="utf-8") as fh:
+                fh.write('\nengineer = "engineer"\n')
+            result = shobr("screened", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("(CLOSED)", result.stdout)
+            self.assertNotIn("REJECTED", result.stdout)
+
+    def test_tailored_flags_closed(self) -> None:
+        """tailored tags a packaged row closed by a later enrichment."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("tailored", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("(CLOSED)", result.stdout)
+
+    def test_tracked_flags_closed(self) -> None:
+        """tracked tags a tracked row closed by a later enrichment, keeping Status."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+            result = shobr("track", "5550000001", "applied", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("tracked", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("(CLOSED)", result.stdout)
+            self.assertIn("Status:", result.stdout)
+            self.assertNotIn("REJECTED", result.stdout)
+
+    def test_screened_flags_filtered(self) -> None:
+        """screened shows the rejection reason for a filter-flipped row."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            result = shobr("screened", env=env)
+            self.assertNotIn("REJECTED", result.stdout)
+
+            filters_path = data_home.shobr_config / "config.toml"
+            with filters_path.open("a", encoding="utf-8") as fh:
+                fh.write('\nengineer = "engineer"\n')
+            result = shobr("screened", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("(REJECTED: title contains 'engineer')", _strip_ansi(result.stdout))
+
+    def test_tailored_flags_filtered(self) -> None:
+        """tailored shows the rejection reason for a filter-flipped package."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+            filters_path = data_home.shobr_config / "config.toml"
+            with filters_path.open("a", encoding="utf-8") as fh:
+                fh.write('\nengineer = "engineer"\n')
+            result = shobr("tailored", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("(REJECTED: title contains 'engineer')", _strip_ansi(result.stdout))
+
+    def test_tracked_flags_filtered(self) -> None:
+        """tracked shows the rejection reason, keeping Status, for flipped rows."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+            result = shobr("track", "5550000001", "applied", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            filters_path = data_home.shobr_config / "config.toml"
+            with filters_path.open("a", encoding="utf-8") as fh:
+                fh.write('\nengineer = "engineer"\n')
+            result = shobr("tracked", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertIn("(REJECTED: title contains 'engineer')", out)
+            self.assertIn("Status:", out)
+
+    def test_status_shows_closed_counts(self) -> None:
+        """status marks closed totals inline, once per reached stage."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+            result = shobr("track", "5550000001", "applied", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = shobr("status", env=env)
+            self.assertNotIn("closed", _strip_ansi(result.stdout))
+
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("status", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertEqual(out.count("(1 closed)"), 3)
+            self.assertRegex(out, r"Total Screened:\s+1 \(1 closed\)")
+            self.assertRegex(out, r"Packages Built:\s+1 \(1 closed\)")
+            self.assertRegex(out, r"Applied:\s+1 \(1 closed\)")
+
+    def test_status_counts_each_row_once_closed_first(self) -> None:
+        """status splits un-actionable rows into closed vs filtered, no doubles."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_minimal_lead(data_home, posting_id="5550000011")
+            seed_human_review(data_home, posting_id="5550000011", score=5)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            filters_path = data_home.shobr_config / "config.toml"
+            with filters_path.open("a", encoding="utf-8") as fh:
+                fh.write('\nengineer = "engineer"\n')
+
+            result = shobr("status", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertRegex(out, r"Total Screened:\s+2 \(1 closed, 1 filtered\)")
+            self.assertRegex(out, r"Pending Tailoring:\s+0")
+
+    def test_enriched_shows_checked_date(self) -> None:
+        """enriched rows show the last-check date from the latest event."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            env = data_home.env
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("enriched", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Last Enriched At: 2026-09-14", result.stdout)
+
+    def test_screened_shows_checked_date(self) -> None:
+        """screened rows show the last-check date, refreshed by re-enrichment."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("screened", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Last Enriched At: 2026-09-14", result.stdout)
+            self.assertIn("Reviewed At: 2026-09-13", result.stdout)
+
+    def test_tailored_shows_checked_date(self) -> None:
+        """tailored rows show the last-check date from the enrichment."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("tailored", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Last Enriched At: 2026-09-14", result.stdout)
+            self.assertIn("Tailored At: 2026-09-13", result.stdout)
+
+    def test_editor_template_shows_checked_date(self) -> None:
+        """the $EDITOR template carries the last-check date in Job Details."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            template_capture = data_home.path / "template-captured.md"
+            env_editor = add_editor_to_env(
+                env,
+                "SHOBR_SCORE: 3\nSHOBR_REASONING: human agrees\n",
+                capture_to=template_capture,
+            )
+            result = shobr("screen", "5550000001", env=env_editor)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Last Enriched At: 2026-09-14", template_capture.read_text())
+
+    def test_tracked_shows_action_and_check_dates(self) -> None:
+        """tracked keeps the action Date and adds Last Enriched At."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+            result = shobr("track", "5550000001", "applied", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("tracked", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(result.stdout, r"Tracked At: \d{4}-\d{2}-\d{2}")
+            self.assertIn("Last Enriched At: 2026-09-14", result.stdout)
 
 
 def _test_method_names() -> list[str]:

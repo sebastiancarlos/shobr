@@ -1,7 +1,7 @@
 """Pipeline-wide overview, and single-step dispatcher."""
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
 from .core import ShobrError
@@ -10,6 +10,7 @@ from .enrichment import (
     EnrichedRow,
     enrich_next,
     enrich_posting_id,
+    is_closed,
     project_enrichment,
 )
 from .screening import (
@@ -57,13 +58,13 @@ def _load_stores() -> tuple[
 
 def _pending_enrichment(leads: list[StoredJob], enriched_ids: set[str]) -> int:
     """Passing leads with no enrichment attempt yet."""
-    return sum(1 for row in leads if row["pass_filter"] and row["posting_id"] not in enriched_ids)
+    return sum(1 for row in leads if row["actionable"] and row["posting_id"] not in enriched_ids)
 
 
 def _pending_screening(enriched: list[EnrichedRow], human_reviewed_ids: set[str]) -> int:
     """Passing enriched rows with no human review yet."""
     return sum(
-        1 for row in enriched if row["pass_filter"] and row["posting_id"] not in human_reviewed_ids
+        1 for row in enriched if row["actionable"] and row["posting_id"] not in human_reviewed_ids
     )
 
 
@@ -74,7 +75,7 @@ def _pending_ai_screening(
     return sum(
         1
         for row in enriched
-        if row["pass_filter"]
+        if row["actionable"]
         and row["posting_id"] not in human_reviewed_ids
         and row["posting_id"] not in ai_reviewed_ids
     )
@@ -84,7 +85,7 @@ def _pending_tailoring(
     screened: dict[str, ScreeningRow], tailored_ids: set[str], enriched: list[EnrichedRow]
 ) -> int:
     """Pursue rows with no package yet, still passing enrichment."""
-    passing = {row["posting_id"] for row in enriched if row["pass_filter"]}
+    passing = {row["posting_id"] for row in enriched if row["actionable"]}
     return sum(
         1
         for pid, sr in screened.items()
@@ -96,7 +97,7 @@ def _pending_review(
     tailored_ids: set[str], tracked_ids: set[str], enriched: list[EnrichedRow]
 ) -> int:
     """Packaged postings with no tracking event yet, still passing enrichment."""
-    passing = {row["posting_id"] for row in enriched if row["pass_filter"]}
+    passing = {row["posting_id"] for row in enriched if row["actionable"]}
     return sum(1 for pid in tailored_ids if pid not in tracked_ids and pid in passing)
 
 
@@ -146,6 +147,29 @@ def print_status() -> None:
     for row in tracked.values():
         counts[row["status"]] += 1
 
+    closed = {row["posting_id"] for row in enriched if is_closed(row)}
+    failing = {row["posting_id"] for row in enriched if not row["actionable"]}
+    filtered = failing - closed
+
+    def _breakdown(pids: Iterable[str]) -> str:
+        parts = []
+        if closed_count := sum(1 for pid in pids if pid in closed):
+            parts.append(f"{closed_count} closed")
+        if filtered_count := sum(1 for pid in pids if pid in filtered):
+            parts.append(f"{filtered_count} filtered")
+        return f" ({', '.join(parts)})" if parts else ""
+
+    validity_note = {
+        "Total Screened:": _breakdown(screened),
+        "Packages Built:": _breakdown(tailored),
+        **{
+            f"{status.value.capitalize()}:": _breakdown(
+                pid for pid, row in tracked.items() if row["status"] == status
+            )
+            for status in TrackStatus
+        },
+    }
+
     sections: list[tuple[str, list[tuple[str, int, str]]]] = [
         (
             "DISCOVERY",
@@ -153,7 +177,7 @@ def print_status() -> None:
                 ("Total Leads Found:", len(leads), BLUE),
                 (
                     "Rejected by Filter:",
-                    sum(1 for row in leads if not row["pass_filter"]),
+                    sum(1 for row in leads if not row["actionable"]),
                     RED,
                 ),
                 ("Pending Enrichment:", _pending_enrichment(leads, enriched_ids), GREEN),
@@ -165,7 +189,7 @@ def print_status() -> None:
                 ("Total Enriched:", len(enriched), BLUE),
                 (
                     "Rejected by Filter:",
-                    sum(1 for row in enriched if not row["pass_filter"]),
+                    sum(1 for row in enriched if not row["actionable"]),
                     RED,
                 ),
                 ("Pending Screening:", _pending_screening(enriched, human_reviewed), GREEN),
@@ -210,7 +234,7 @@ def print_status() -> None:
     for name, rows in sections:
         print(f"{BOLD}- {name}{RESET}")
         for label, count, color in rows:
-            print(f"  - {label:<{width}}  {color}{count}{RESET}")
+            print(f"  - {label:<{width}}  {color}{count}{RESET}{validity_note.get(label, '')}")
             if name == "SCREENING" and label == "Pending Human Review:":
                 for line in histogram:
                     print(line)
@@ -315,7 +339,7 @@ def _run_next_for_id(posting_id: str) -> None:
     lead = next((row for row in leads if row["posting_id"] == posting_id), None)
     if lead is None:
         raise ShobrError(f"posting {posting_id} not found in leads store")
-    if not lead["pass_filter"]:
+    if not lead["actionable"]:
         raise ShobrError(f"posting {posting_id} did not pass the pre-filter")
     enriched_rows = {row["posting_id"]: row for row in enriched}
     if posting_id not in enriched_rows:
@@ -327,7 +351,7 @@ def _run_next_for_id(posting_id: str) -> None:
             return
         print(f"nothing to do for {posting_id}")
         return
-    if not enriched_rows[posting_id]["pass_filter"]:
+    if not enriched_rows[posting_id]["actionable"]:
         raise ShobrError(f"posting {posting_id} did not pass the pre-filter")
 
     sr = screened.get(posting_id)
