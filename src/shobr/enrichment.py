@@ -251,7 +251,9 @@ def print_apply_block(row: EnrichedRow) -> None:
     if row["apply_url"]:
         print(f"    - {row['apply_url']}")
         print("    - Or through LinkedIn:")
-        print(f"      - {row['posting_url']}")
+    else:
+        print("    - Through LinkedIn:")
+    print(f"      - {row['posting_url']}")
 
 
 def print_description_block(label: str, text: str | None, *, truncate: bool) -> None:

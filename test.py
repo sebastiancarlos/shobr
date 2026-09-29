@@ -2094,6 +2094,8 @@ class TestCLI(unittest.TestCase):
                     )
                     self.assertEqual(event["apply_method"], "easy_apply")
                     self.assertIsNone(event["apply_url"])
+                    self.assertIn("Through LinkedIn:", result.stdout)
+                    self.assertIn("https://www.linkedin.com/jobs/view/5550000004", result.stdout)
 
     def test_enrich_posting_id_missing_company_module(self) -> None:
         """'shobr enrich' on a page without an 'About the company' module
