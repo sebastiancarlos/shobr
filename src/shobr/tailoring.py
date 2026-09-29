@@ -248,6 +248,60 @@ def _wrap_markdown(text: str, width: int = 80) -> str:
     return "\n".join(out) + "\n"
 
 
+def _notes_markdown(row: EnrichedRow, screening: ScreeningRow | None) -> str:
+    """Render the job description to be added to notes.md."""
+    checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
+    built = datetime.now(UTC).date().isoformat()
+    lines = [
+        "# SHOBR Job Description",
+        "",
+        "The shobr state for the job when this package was tailored "
+        f"({built}). `shobr review {row['posting_id']}` shows the live state.",
+        "",
+        f"- Posting: {row['posting_url']}",
+        f"- Company: {row['company']}",
+        f"- Location: {row['location']}",
+    ]
+    for label, value in (
+        ("Location type", row["location_type"]),
+        ("Employment type", row["employment_type"]),
+        ("Salary range", row["salary_range"]),
+    ):
+        if value:
+            lines.append(f"- {label}: {value}")
+    lines.append(f"- Apply: {row['apply_method']}")
+    if row["apply_url"]:
+        lines.append(f"- Apply URL: {row['apply_url']}")
+    lines += [
+        f"- Last Enriched At: {checked}",
+        f"- Tailored At: {built}",
+        "",
+        "## Screening",
+        "",
+    ]
+    if screening is None:
+        lines.append("- Decision: N/A")
+    else:
+        lines.append(f"- Decision: {str(screening['decision']).upper()}")
+        for label, review in (("AI", screening["ai"]), ("Human", screening["human"])):
+            if review is None:
+                lines.append(f"- {label}: none")
+            else:
+                lines.append(f"- {label}: {review['score']}")
+                lines.append(f"- {label} reasoning: {review['reasoning']}")
+    lines += [
+        "",
+        "## Job description",
+        "",
+        row["job_description"],
+        "",
+        "## Company description",
+        "",
+        row["company_description"] or "none captured",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _run_tailor_live(
     row: EnrichedRow,
     profile: TailoringProfile,
@@ -336,6 +390,14 @@ def _run_tailor_live(
     cover_md = _wrap_markdown(cover_md)
     (app_dir / "cover-letter.md").write_text(cover_md, encoding="utf-8")
     commit(f"tailor {slug}: cover letter")
+
+    notes_path = app_dir / "notes.md"
+    existing = notes_path.read_text(encoding="utf-8") if notes_path.exists() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    snapshot = _notes_markdown(row, project_screening()["rows"].get(row["posting_id"]))
+    notes_path.write_text(f"{existing}\n{snapshot}", encoding="utf-8")
+    commit(f"tailor {slug}: notes")
 
     toolchain.finalize(app_dir)
     commit(f"tailor {slug}: renamed pdfs")

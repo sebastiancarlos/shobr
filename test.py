@@ -3334,6 +3334,13 @@ class TestCLI(unittest.TestCase):
                 self.assertIn("fake cover for testing", (app_dir / "cover-letter.md").read_text())
                 for line in (app_dir / "cover-letter.md").read_text().splitlines():
                     self.assertLessEqual(len(line), 80, line)
+                notes = (app_dir / "notes.md").read_text()
+                self.assertIn("https://www.linkedin.com/jobs/view/5550000001", notes)
+                self.assertIn("Decision: PURSUE", notes)
+                self.assertIn("hand-written human review", notes)
+                self.assertIn("**Mission**", notes)
+                self.assertIn("leading provider of widget infrastructure", notes)
+                self.assertNotIn("UNTRACKED", notes)
                 self.assertTrue((app_dir / "Test_Candidate_ENGLISH.pdf").is_file())
                 self.assertFalse((app_dir / "resume_spanish.md").exists())
 
