@@ -3753,6 +3753,7 @@ class TestCLI(unittest.TestCase):
             result = shobr("review-next", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("[FakeCo] 5550000001", result.stdout)
+            self.assertIn("shobr track 5550000001 applied", result.stdout)
 
             result = shobr("track", "5550000001", "applied", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)

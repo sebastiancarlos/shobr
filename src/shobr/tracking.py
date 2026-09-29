@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TypedDict
 
-from .color import BOLD, GREEN, RED, RESET, YELLOW
+from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
 from .config import load_config
 from .core import (
     DataKind,
@@ -232,5 +232,6 @@ def review_next() -> None:
         if posting_id in tracked or posting_id not in passing:
             continue
         _print_review(row)
+        print(f"If you applied, track it: {BLUE}shobr track {posting_id} applied{RESET}")
         return
     print("nothing to review")
