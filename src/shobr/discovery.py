@@ -19,6 +19,7 @@ from .core import (
     reasons_line,
     rejected_tag,
     require_events,
+    same_company_line,
     short_path,
     stage_line,
     store_path,
@@ -165,6 +166,8 @@ def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None =
             print(f"  - {row['posting_url']}")
             seen = datetime.fromisoformat(row["first_seen_at"]).date().isoformat()
             print(f"  - First Discovered At: {seen}")
+            if line := same_company_line(row["company"], row["posting_id"]):
+                print(line)
             print(stage_line(row["posting_id"], DataKind.DISCOVERY))
 
         reasons = Counter(

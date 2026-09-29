@@ -24,6 +24,7 @@ from .core import (
     read_events,
     render_template,
     require_events,
+    same_company_line,
     short_path,
     stage_line,
     store_path,
@@ -419,17 +420,26 @@ def print_screened(score_filter: str | None = None) -> None:
             return _effective_score(row) in wanted
 
         rows = [row for row in screened["rows"].values() if keep(row)]
+        assert event_log(DataKind.ENRICHMENT).exists(), "screening data implies enrichment data"
+        passing = {pid for pid, row in project_enrichment()["rows"].items() if row["actionable"]}
         pursue = sum(1 for row in rows if row["decision"] == ReviewDecision.PURSUE)
         skip = sum(1 for row in rows if row["decision"] == ReviewDecision.SKIP)
-        pending = sum(1 for row in rows if row["decision"] == ReviewDecision.PENDING)
-        lacking = sum(1 for row in rows if row["human"] is None and row["ai"] is None)
+        pending = sum(
+            1
+            for row in rows
+            if row["decision"] == ReviewDecision.PENDING and row["posting_id"] in passing
+        )
+        lacking = sum(
+            1
+            for row in rows
+            if row["human"] is None and row["ai"] is None and row["posting_id"] in passing
+        )
         print(
             f"{BLUE}{len(rows)}{RESET} screened ({GREEN}{pursue}{RESET} pursue, "
             f"{RED}{skip}{RESET} skip, {YELLOW}{lacking}{RESET} lacking LLM review, "
-            f"{YELLOW}{pending}{RESET} pending)"
+            f"{YELLOW}{pending}{RESET} pending human review)"
         )
         print()
-        assert event_log(DataKind.ENRICHMENT).exists(), "screening data implies enrichment data"
         enriched = project_enrichment()
         for row in rows:
             eref = enriched["rows"][row["posting_id"]]
@@ -448,6 +458,8 @@ def print_screened(score_filter: str | None = None) -> None:
             ]
             reviewed = datetime.fromisoformat(max(scored)).date().isoformat()
             print(f"  - Reviewed At: {reviewed}")
+            if line := same_company_line(eref["company"], row["posting_id"]):
+                print(line)
 
         print()
 

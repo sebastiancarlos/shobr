@@ -19,6 +19,7 @@ from .core import (
     read_events,
     render_template,
     require_events,
+    same_company_line,
     short_path,
     stage_line,
     store_path,
@@ -134,6 +135,8 @@ def print_tailored() -> None:
             print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
             built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
             print(f"  - Tailored At: {built}")
+            if line := same_company_line(eref["company"], row["posting_id"]):
+                print(line)
 
         print()
 

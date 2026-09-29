@@ -23,6 +23,7 @@ from .core import (
     reasons_line,
     rejected_tag,
     require_events,
+    same_company_line,
     short_path,
     stage_line,
     store_path,
@@ -296,6 +297,8 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
     threshold = load_config()["stale_after_days"]
     print(f"  - Last Enriched At: {checked}{staleness_tag(row, threshold)}")
+    if line := same_company_line(row["company"], row["posting_id"]):
+        print(line)
     if short:
         return
     print_description_block("Description", row["job_description"], truncate=truncate)

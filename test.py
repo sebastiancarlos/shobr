@@ -2442,6 +2442,38 @@ class TestCLI(unittest.TestCase):
             self.assertFalse((enrichment_dir / "events.jsonl").exists())
             self.assertFalse((enrichment_dir / "enrichment.json").exists())
 
+    def test_screened_omits_invalidated_pending(self) -> None:
+        """screened stops counting a pending row closed by a later enrichment."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            screening_dir = data_home.shobr_data / "screening"
+            screening_dir.mkdir(parents=True, exist_ok=True)
+            with (screening_dir / "events.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "scored_at": "2026-09-13T00:00:00+00:00",
+                            "posting_id": "1234567890",
+                            "kind": "ai_review",
+                            "score": 4,
+                            "reasoning": "fake ai review",
+                        }
+                    )
+                    + "\n"
+                )
+            result = shobr("screened", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("1 pending human review)", _strip_ansi(result.stdout))
+
+            seed_enrichment_event(
+                data_home,
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("screened", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("0 pending human review)", _strip_ansi(result.stdout))
+
     def test_screened_score_filter(self) -> None:
         """screened --score filters by human score, else AI score; 'none'
         shows rows with no human review."""
@@ -2578,7 +2610,8 @@ class TestCLI(unittest.TestCase):
             result = shobr("screened", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(
-                "1 screened (1 pursue, 0 skip, 0 lacking LLM review, 0 pending)", result.stdout
+                "1 screened (1 pursue, 0 skip, 0 lacking LLM review, 0 pending human review)",
+                result.stdout,
             )
             self.assertIn("[FakeCo] 5550000001", result.stdout)
             self.assertIn(
@@ -2727,7 +2760,8 @@ class TestCLI(unittest.TestCase):
             result = shobr("screened", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(
-                "1 screened (0 pursue, 1 skip, 0 lacking LLM review, 0 pending)", result.stdout
+                "1 screened (0 pursue, 1 skip, 0 lacking LLM review, 0 pending human review)",
+                result.stdout,
             )
             self.assertIn("  - Human: 1", result.stdout)
             self.assertIn("  - Decision: SKIP", result.stdout)
@@ -2743,7 +2777,8 @@ class TestCLI(unittest.TestCase):
 
             result = shobr("screened", env=env)
             self.assertIn(
-                "1 screened (1 pursue, 0 skip, 0 lacking LLM review, 0 pending)", result.stdout
+                "1 screened (1 pursue, 0 skip, 0 lacking LLM review, 0 pending human review)",
+                result.stdout,
             )
             self.assertIn("  - Human: 5", result.stdout)
             self.assertIn("  - Decision: PURSUE", result.stdout)
@@ -2804,7 +2839,8 @@ class TestCLI(unittest.TestCase):
 
             result = shobr("screened", env=env)
             self.assertIn(
-                "1 screened (1 pursue, 0 skip, 0 lacking LLM review, 0 pending)", result.stdout
+                "1 screened (1 pursue, 0 skip, 0 lacking LLM review, 0 pending human review)",
+                result.stdout,
             )
 
             result = shobr("screen-next", env=env)
@@ -4394,6 +4430,28 @@ class TestCLI(unittest.TestCase):
             result = shobr("status", env=data_home.env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertRegex(_strip_ansi(result.stdout), r"Pending Human Review:\s+0")
+
+    def test_listings_flag_same_company_application(self) -> None:
+        """discovered/enriched rows note a non-withdrawn application at the company."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="1111111111")
+            seed_minimal_lead(data_home, posting_id="2222222222")
+            seed_tailored_package(data_home, posting_id="1111111111")
+            result = shobr("track", "1111111111", "applied", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            today = datetime.now(UTC).date().isoformat()
+            for command in ("discovered", "enriched"):
+                result = shobr(command, env=data_home.env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stdout.count("Last Applied To Same Company:"), 1)
+                self.assertIn(f"{today} (1111111111)", result.stdout)
+
+            result = shobr("track", "1111111111", "withdrawn", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = shobr("enriched", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("Last Applied To Same Company:", result.stdout)
 
     def test_next_skips_invalidated_tailoring(self) -> None:
         """next stops offering tailor for a pursue row closed by re-enrichment."""

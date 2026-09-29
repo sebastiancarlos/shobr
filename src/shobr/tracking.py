@@ -14,6 +14,7 @@ from .core import (
     persist_event,
     read_events,
     require_events,
+    same_company_line,
     short_path,
     store_path,
 )
@@ -184,6 +185,8 @@ def _print_review(row: TailoringRow) -> None:
         if pills:
             print(f"  - {pills}")
         print_apply_block(eref)
+        if line := same_company_line(eref["company"], row["posting_id"]):
+            print(line)
 
         # print screening info
         sr = project_screening()["rows"].get(row["posting_id"])

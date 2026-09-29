@@ -11,11 +11,12 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from .color import BLUE, RED, RESET
+from .color import BLUE, RED, RESET, YELLOW
 
 if TYPE_CHECKING:
     from .enrichment import EnrichedRow
@@ -189,6 +190,35 @@ def stage_line(posting_id: str, after: DataKind) -> str:
     if _STAGE_RANK[stage] > _STAGE_RANK[after]:
         return f"  - Stage: {BLUE}{stage.value}{RESET}{detail}"
     return f"  - Stage: {stage.value}{detail}"
+
+
+def same_company_line(company: str, posting_id: str) -> str | None:
+    """Yellow 'Last Applied To Same Company' line.
+
+    Latest non-withdrawn tracking event at `company`, excluding `posting_id`
+    itself. None when the stores are missing or hold no such application.
+    """
+    from .tracking import TrackStatus, project_tracking
+
+    if not event_log(DataKind.TRACKING).exists():
+        return None
+    if not event_log(DataKind.ENRICHMENT).exists():
+        return None
+    from .enrichment import project_enrichment
+
+    companies = {pid: row["company"] for pid, row in project_enrichment()["rows"].items()}
+    latest: tuple[str, str] | None = None
+    for pid, tracked in project_tracking()["rows"].items():
+        if pid == posting_id or tracked["status"] == TrackStatus.WITHDRAWN:
+            continue
+        if companies.get(pid) != company:
+            continue
+        if latest is None or tracked["tracked_at"] > latest[0]:
+            latest = (tracked["tracked_at"], pid)
+    if latest is None:
+        return None
+    date = datetime.fromisoformat(latest[0]).date().isoformat()
+    return f"  - {YELLOW}Last Applied To Same Company:{RESET} {date} ({latest[1]})"
 
 
 def rejected_tag(reason: str) -> str:
