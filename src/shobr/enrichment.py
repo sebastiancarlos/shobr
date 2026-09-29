@@ -314,6 +314,13 @@ def _enrich_one(target: StoredJob) -> None:
             "the LinkedIn job detail page structure may have changed, "
             "refusing to record an empty enrichment"
         )
+    if detail["accepting_applications"] and not detail["apply_method"] and not detail["apply_url"]:
+        raise ShobrError(
+            f"parsed no apply info for posting {target['posting_id']} while it still "
+            "appears open; the LinkedIn job detail page structure may have changed "
+            "(or the posting closed with an unrecognized notice), "
+            "refusing to record an incomplete enrichment"
+        )
     if company_description is None:
         company_description = ""
 

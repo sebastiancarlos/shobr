@@ -2247,6 +2247,39 @@ class TestCLI(unittest.TestCase):
                     self.assertFalse((enrichment_dir / "events.jsonl").exists())
                     self.assertFalse((enrichment_dir / "enrichment.json").exists())
 
+    def test_enrich_refuses_open_posting_without_apply_info(self) -> None:
+        """'shobr enrich' on an open-looking page with no apply control fails
+        loudly (likely a LinkedIn DOM change) instead of recording vapor."""
+        detail = _read_fixture("job-detail-no-apply.html")
+
+        profile = f"test-{os.getpid()}-shobr-enrich-no-apply"
+        with TestDataHome(name="enrich-no-apply") as data_home:
+            env = data_home.env
+            result = shobr("setup", env=env)
+            seed_test_config(data_home)
+
+            search = _search_page(("5550000008", "Test Engineer", "TestCo", "Testville"))
+            with FakeLinkedInServer(
+                {"/jobs/search-results": search, "/jobs/view/5550000008": detail}
+            ) as server:
+                with TestBeachpatrolInstance(env, profile):
+                    env = {
+                        **env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+
+                    result = shobr("discover", env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+                    result = shobr("enrich", "5550000008", env=env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertIn("no apply info", result.stderr)
+                    enrichment_dir = data_home.shobr_data / "enrichment"
+                    self.assertFalse((enrichment_dir / "events.jsonl").exists())
+                    self.assertFalse((enrichment_dir / "enrichment.json").exists())
+
     def test_enrich_posting_id_closed_posting(self) -> None:
         """'shobr enrich <posting_id>' on a closed posting."""
         search = _read_fixture("job-search.html")
