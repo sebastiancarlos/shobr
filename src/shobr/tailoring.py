@@ -124,7 +124,7 @@ def print_tailored() -> None:
             print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")
             print(f"  - Slug: {row['slug']}")
-            print(f"  - App dir: {short_path(row['app_dir'])}")
+            print(f"  - {BOLD}Application dir:{RESET} {short_path(row['app_dir'])}")
             print(
                 f"  - Rewrites: {GREEN if row['rewrites'] == 0 else YELLOW}{row['rewrites']}{RESET}"
             )

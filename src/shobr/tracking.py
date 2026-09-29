@@ -203,7 +203,7 @@ def _print_review(row: TailoringRow) -> None:
             if tracked["note"]:
                 print(f"    - Note: {tracked['note']}")
         print(f"  - Slug: {row['slug']}")
-        print(f"  - {BOLD}App dir:{RESET} {short_path(row['app_dir'])}")
+        print(f"  - {BOLD}Application dir:{RESET} {short_path(row['app_dir'])}")
         print_description_block("Description", eref["job_description"], truncate=False)
         print_description_block("Company description", eref["company_description"], truncate=False)
         print()
