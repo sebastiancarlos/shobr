@@ -47,6 +47,7 @@ from .screening import (
     ScreeningProfile,
     ScreeningRow,
     job_posting_block,
+    labeled_block,
     load_files,
     profile_blocks,
     project_screening,
@@ -286,12 +287,12 @@ def _notes_markdown(row: EnrichedRow, screening: ScreeningRow | None) -> str:
         lines.append("- Decision: N/A")
     else:
         lines.append(f"- Decision: {str(screening['decision']).upper()}")
-        for label, review in (("AI", screening["ai"]), ("Human", screening["human"])):
+        for label, review in (("LLM", screening["ai"]), ("Human", screening["human"])):
             if review is None:
                 lines.append(f"- {label}: none")
             else:
                 lines.append(f"- {label}: {review['score']}")
-                lines.append(f"- {label} reasoning: {review['reasoning']}")
+                lines.append(labeled_block(f"- {label} reasoning:", review["reasoning"]))
     lines += [
         "",
         "## Job description",
