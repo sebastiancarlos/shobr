@@ -3720,6 +3720,10 @@ class TestCLI(unittest.TestCase):
             self.assertIn("UNTRACKED", result.stdout)
             self.assertIn("seeded resume", result.stdout)
             self.assertIn("seeded cover", result.stdout)
+            self.assertIn("  - Description:", result.stdout)
+            self.assertIn("**Mission**", result.stdout)
+            self.assertIn("  - Company description:", result.stdout)
+            self.assertIn("leading provider of widget infrastructure", result.stdout)
 
             result = shobr("track", "5550000001", "applied", "--note", "via portal", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)

@@ -20,6 +20,7 @@ from .core import (
 from .enrichment import (
     get_enriched_rows,
     print_apply_block,
+    print_description_block,
     project_enrichment,
     staleness_tag,
     validity_tag,
@@ -202,13 +203,15 @@ def _print_review(row: TailoringRow) -> None:
             if tracked["note"]:
                 print(f"    - Note: {tracked['note']}")
         print(f"  - Slug: {row['slug']}")
-        print(f"  - App dir: {short_path(row['app_dir'])}")
+        print(f"  - {BOLD}App dir:{RESET} {short_path(row['app_dir'])}")
+        print_description_block("Description", eref["job_description"], truncate=False)
+        print_description_block("Company description", eref["company_description"], truncate=False)
         print()
-        print("--- RESUME ---")
+        print(f"{BOLD}--- RESUME ---{RESET}")
         print()
         print(row["resume_md"])
         print()
-        print("--- COVER LETTER ---")
+        print(f"{BOLD}--- COVER LETTER ---{RESET}")
         print()
         print(row["cover_md"])
 

@@ -254,7 +254,7 @@ def print_apply_block(row: EnrichedRow) -> None:
         print(f"      - {row['posting_url']}")
 
 
-def _print_description_block(label: str, text: str | None, *, truncate: bool) -> None:
+def print_description_block(label: str, text: str | None, *, truncate: bool) -> None:
     """Print one description block, optionally capped at its first line."""
     if not text:
         print(f"  - {label}: none captured")
@@ -296,8 +296,8 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     print(f"  - Last Enriched At: {checked}{staleness_tag(row, threshold)}")
     if short:
         return
-    _print_description_block("Description", row["job_description"], truncate=truncate)
-    _print_description_block("Company description", row["company_description"], truncate=truncate)
+    print_description_block("Description", row["job_description"], truncate=truncate)
+    print_description_block("Company description", row["company_description"], truncate=truncate)
 
 
 def _enrich_one(target: StoredJob) -> None:
