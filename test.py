@@ -4363,6 +4363,38 @@ class TestCLI(unittest.TestCase):
             self.assertRegex(_strip_ansi(result.stdout), r"Pending Tailoring:\s+0")
             self.assertNotIn("to tailor", _strip_ansi(result.stdout))
 
+    def test_status_omits_invalidated_human_review(self) -> None:
+        """status stops counting a pending-human row closed by a later enrichment."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            screening_dir = data_home.shobr_data / "screening"
+            screening_dir.mkdir(parents=True, exist_ok=True)
+            with (screening_dir / "events.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "scored_at": "2026-09-13T00:00:00+00:00",
+                            "posting_id": "1234567890",
+                            "kind": "ai_review",
+                            "score": 4,
+                            "reasoning": "fake ai review",
+                        }
+                    )
+                    + "\n"
+                )
+            result = shobr("status", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(_strip_ansi(result.stdout), r"Pending Human Review:\s+1")
+
+            seed_enrichment_event(
+                data_home,
+                accepting_applications=False,
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+            result = shobr("status", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(_strip_ansi(result.stdout), r"Pending Human Review:\s+0")
+
     def test_next_skips_invalidated_tailoring(self) -> None:
         """next stops offering tailor for a pursue row closed by re-enrichment."""
         with TestDataHome() as data_home:

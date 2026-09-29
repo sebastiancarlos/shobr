@@ -110,9 +110,14 @@ def print_status() -> None:
 
     enriched_ids = {row["posting_id"] for row in enriched}
     human_reviewed = {pid for pid, sr in screened.items() if sr["human"] is not None}
+    passing = {row["posting_id"] for row in enriched if row["actionable"]}
 
     skip = sum(1 for sr in screened.values() if sr["decision"] == ReviewDecision.SKIP)
-    pending_human = sum(1 for sr in screened.values() if sr["decision"] == ReviewDecision.PENDING)
+    pending_human = sum(
+        1
+        for pid, sr in screened.items()
+        if sr["decision"] == ReviewDecision.PENDING and pid in passing
+    )
     ai_reviewed = {pid for pid, sr in screened.items() if sr["ai"] is not None}
     lacking_llm = _pending_ai_screening(enriched, human_reviewed, ai_reviewed)
 
@@ -127,7 +132,6 @@ def print_status() -> None:
     left_header, right_header = "LLM Scores:", "Human Scores:"
     left_rows = [f"{score}: {ai_scores[score]}" for score in scores_desc]
     right_rows = []
-    passing = {row["posting_id"] for row in enriched if row["actionable"]}
     for score in scores_desc:
         text = f"{score}: {human_scores[score]}"
         to_tailor = sum(
@@ -171,7 +175,9 @@ def print_status() -> None:
             if row["actionable"] and row["posting_id"] not in human_reviewed
         ),
         "Pending Human Review:": _stale_suffix(
-            pid for pid, sr in screened.items() if sr["decision"] == ReviewDecision.PENDING
+            pid
+            for pid, sr in screened.items()
+            if sr["decision"] == ReviewDecision.PENDING and pid in passing
         ),
         "Pending Tailoring:": _stale_suffix(
             pid
