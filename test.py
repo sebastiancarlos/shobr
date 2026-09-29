@@ -4350,6 +4350,7 @@ class TestCLI(unittest.TestCase):
             seed_human_review(data_home)
             result = shobr("status", env=env)
             self.assertRegex(_strip_ansi(result.stdout), r"Pending Tailoring:\s+1")
+            self.assertIn("(1 to tailor)", _strip_ansi(result.stdout))
 
             seed_enrichment_event(
                 data_home,
@@ -4360,6 +4361,7 @@ class TestCLI(unittest.TestCase):
             result = shobr("status", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertRegex(_strip_ansi(result.stdout), r"Pending Tailoring:\s+0")
+            self.assertNotIn("to tailor", _strip_ansi(result.stdout))
 
     def test_next_skips_invalidated_tailoring(self) -> None:
         """next stops offering tailor for a pursue row closed by re-enrichment."""

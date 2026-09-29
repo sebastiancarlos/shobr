@@ -127,6 +127,7 @@ def print_status() -> None:
     left_header, right_header = "LLM Scores:", "Human Scores:"
     left_rows = [f"{score}: {ai_scores[score]}" for score in scores_desc]
     right_rows = []
+    passing = {row["posting_id"] for row in enriched if row["actionable"]}
     for score in scores_desc:
         text = f"{score}: {human_scores[score]}"
         to_tailor = sum(
@@ -136,6 +137,7 @@ def print_status() -> None:
             and int(sr["human"]["score"]) == score
             and sr["decision"] == ReviewDecision.PURSUE
             and pid not in tailored
+            and pid in passing
         )
         if to_tailor:
             text += f" ({to_tailor} to tailor)"
@@ -157,7 +159,6 @@ def print_status() -> None:
     if enriched:
         threshold = load_config()["stale_after_days"]
         stale = {row["posting_id"] for row in enriched if is_stale(row, threshold)}
-    passing = {row["posting_id"] for row in enriched if row["actionable"]}
 
     def _stale_suffix(pids: Iterable[str]) -> str:
         n = sum(1 for pid in pids if pid in stale)
