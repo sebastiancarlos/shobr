@@ -21,7 +21,6 @@ from .screening import (
     ReviewDecision,
     Score,
     ScreeningRow,
-    oldest_missing_review,
     project_screening,
     screen_llm_next,
     screen_llm_posting_id,
@@ -30,7 +29,6 @@ from .screening import (
 )
 from .tailoring import (
     TailoringRow,
-    oldest_tailorable,
     project_tailoring,
     tailor_next,
     tailor_posting_id,
@@ -317,16 +315,18 @@ def _run_next() -> None:
         ai_reviewed = {pid for pid, sr in screened.items() if sr["ai"] is not None}
         lacking = _pending_ai_screening(enriched, human_reviewed, ai_reviewed)
         extra = f" ({lacking} lacking LLM screening)" if lacking else ""
-        print(f"{pending} enriched leads awaiting screening{extra}.")
-        rows_by_id = {row["posting_id"]: row for row in enriched}
-        candidates = [oldest_missing_review(rows_by_id, screened, kind) for kind in ("ai", "human")]
-        oldest = min(
-            (row for row in candidates if row is not None),
-            key=lambda row: row["enriched_last_at"],
-            default=None,
-        )
         threshold = load_config()["stale_after_days"]
-        if oldest is not None and is_stale(oldest, threshold):
+        stale_rows = [
+            row
+            for row in enriched
+            if row["actionable"]
+            and row["posting_id"] not in human_reviewed
+            and is_stale(row, threshold)
+        ]
+        stale_bit = f" ({len(stale_rows)} stale)" if stale_rows else ""
+        print(f"{pending} enriched leads awaiting screening{extra}{stale_bit}.")
+        oldest = min(stale_rows, key=lambda row: row["enriched_last_at"], default=None)
+        if oldest is not None:
             checked = datetime.fromisoformat(oldest["enriched_last_at"]).date().isoformat()
             print(f"Oldest pending row last checked {checked} (> {threshold} days ago).")
             if _confirm(
@@ -361,10 +361,20 @@ def _run_next() -> None:
             return
 
     if pending := _pending_tailoring(screened, set(tailored), enriched):
-        print(f"{pending} pursue rows awaiting tailoring.")
-        oldest = oldest_tailorable(enriched, screened, tailored)
         threshold = load_config()["stale_after_days"]
-        if oldest is not None and is_stale(oldest, threshold):
+        stale_rows = [
+            row
+            for row in enriched
+            if (sr := screened.get(row["posting_id"])) is not None
+            and sr["decision"] == ReviewDecision.PURSUE
+            and row["posting_id"] not in tailored
+            and row["actionable"]
+            and is_stale(row, threshold)
+        ]
+        stale_bit = f" ({len(stale_rows)} stale)" if stale_rows else ""
+        print(f"{pending} pursue rows awaiting tailoring{stale_bit}.")
+        oldest = stale_rows[0] if stale_rows else None
+        if oldest is not None:
             checked = datetime.fromisoformat(oldest["enriched_last_at"]).date().isoformat()
             print(f"Oldest pending row last checked {checked} (> {threshold} days ago).")
             if _confirm(

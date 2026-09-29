@@ -3847,6 +3847,7 @@ class TestCLI(unittest.TestCase):
         step without scoring anything."""
         with TestDataHome() as data_home:
             seed_minimal_lead(data_home)
+            refresh_enrichment(data_home)
             env = data_home.env
 
             result = shobr("next", env=env, input_text="n\n" * 10)
@@ -4759,6 +4760,7 @@ class TestCLI(unittest.TestCase):
             result = shobr("next", env=env, input_text="n\n" * 10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Re-enrich it first?", result.stdout)
+            self.assertIn("(1 stale)", result.stdout)
             events = (data_home.shobr_data / "enrichment" / "events.jsonl").read_text()
             self.assertEqual(len([line for line in events.splitlines() if line]), 1)
 
@@ -4776,6 +4778,55 @@ class TestCLI(unittest.TestCase):
             result = shobr("next", env=env, input_text="n\n" * 10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Re-enrich it first?", result.stdout)
+
+    def test_next_refreshes_stale_before_fresh_tailor(self) -> None:
+        """next offers the stale tailorable row even when the oldest is fresh."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="5550000012")
+            refresh_enrichment(data_home, posting_id="5550000012")
+            seed_minimal_lead(data_home, posting_id="5550000011")
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000011",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            seed_human_review(data_home, posting_id="5550000012")
+            seed_human_review(data_home, posting_id="5550000011")
+            result = shobr("next", env=data_home.env, input_text="n\n" * 10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Re-enrich it first?", result.stdout)
+            self.assertIn("shobr enrich 5550000011", result.stdout)
+
+    def test_next_refreshes_stale_before_fresh_screen(self) -> None:
+        """next offers the stale unscreened row even when the oldest is fresh."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="5550000012")
+            refresh_enrichment(data_home, posting_id="5550000012")
+            seed_minimal_lead(data_home, posting_id="5550000011")
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000011",
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+            screening_dir = data_home.shobr_data / "screening"
+            screening_dir.mkdir(parents=True, exist_ok=True)
+            with (screening_dir / "events.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "scored_at": "2026-09-13T00:00:00+00:00",
+                            "posting_id": "5550000011",
+                            "kind": "ai_review",
+                            "score": 4,
+                            "reasoning": "fake ai review",
+                        }
+                    )
+                    + "\n"
+                )
+            result = shobr("next", env=data_home.env, input_text="n\n" * 10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Re-enrich it first?", result.stdout)
+            self.assertIn("shobr enrich 5550000011", result.stdout)
 
     def test_screen_llm_next_refuses_stale(self) -> None:
         """screen-llm-next refuses a stale row, naming re-enrich and --force."""
