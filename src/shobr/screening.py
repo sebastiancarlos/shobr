@@ -551,6 +551,7 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
 """
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
     threshold = load_config()["stale_after_days"]
+    company_line = same_company_line(row["company"], row["posting_id"], plain=True) or ""
     return render_template(
         "editor-screening.md",
         company=row["company"],
@@ -560,6 +561,7 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
         checked=checked,
         stale=staleness_tag(row, threshold),
         apply_lines=apply_lines,
+        company_line=company_line,
         ai_lines=ai_lines,
         job_description=row["job_description"],
         company_description=row["company_description"],

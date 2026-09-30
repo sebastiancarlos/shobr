@@ -192,11 +192,11 @@ def stage_line(posting_id: str, after: DataKind) -> str:
     return f"  - Stage: {stage.value}{detail}"
 
 
-def same_company_line(company: str, posting_id: str) -> str | None:
-    """Yellow 'Last Applied To Same Company' line.
+def same_company_line(company: str, posting_id: str, *, plain: bool = False) -> str | None:
+    """Yellow 'Last Applied To Same Company' line for another posting's row.
 
     Latest non-withdrawn tracking event at `company`, excluding `posting_id`
-    itself. None when the stores are missing or hold no such application.
+    itself. With `plain`, markdown without ANSI (for the $EDITOR template).
     """
     from .tracking import TrackStatus, project_tracking
 
@@ -218,6 +218,8 @@ def same_company_line(company: str, posting_id: str) -> str | None:
     if latest is None:
         return None
     date = datetime.fromisoformat(latest[0]).date().isoformat()
+    if plain:
+        return f"- Last Applied To Same Company: {date} ({latest[1]})"
     return f"  - {YELLOW}Last Applied To Same Company:{RESET} {date} ({latest[1]})"
 
 

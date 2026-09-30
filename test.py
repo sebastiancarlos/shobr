@@ -4533,6 +4533,22 @@ class TestCLI(unittest.TestCase):
                 self.assertEqual(result.stdout.count("Last Applied To Same Company:"), 1)
                 self.assertIn(f"{today} (1111111111)", result.stdout)
 
+            template_capture = data_home.path / "template-company-captured.md"
+            env_editor = add_editor_to_env(
+                {
+                    **data_home.env,
+                    **seed_test_profile(data_home),
+                },
+                "SHOBR_SCORE: 4\nSHOBR_REASONING: editor ok\n",
+                capture_to=template_capture,
+            )
+            refresh_enrichment(data_home, posting_id="2222222222")
+            result = shobr("screen", "2222222222", env=env_editor)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            template_text = template_capture.read_text()
+            self.assertIn(f"- Last Applied To Same Company: {today} (1111111111)", template_text)
+            self.assertNotIn("\x1b", template_text)
+
             result = shobr("track", "1111111111", "withdrawn", env=data_home.env)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = shobr("enriched", env=data_home.env)

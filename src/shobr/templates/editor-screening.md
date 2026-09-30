@@ -6,6 +6,7 @@
 - {title}
 - {pills}
 - Last Enriched At: {checked}{stale}
+{company_line}
 {apply_lines}
 {ai_lines}
 ## Job Description
