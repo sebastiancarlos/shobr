@@ -718,7 +718,11 @@ def seed_discovery_query() -> dict[str, list[str]]:
     }
 
 
-def seed_minimal_lead(data_home: TestDataHome, posting_id: str = "1234567890") -> None:
+def seed_minimal_lead(
+    data_home: TestDataHome,
+    posting_id: str = "1234567890",
+    fetched_at: str = "2026-09-13T00:00:00+00:00",
+) -> None:
     """Seed one passing lead plus its passing enrichment (no browser).
 
     Also seeds the default filters, since every projection loads them.
@@ -728,7 +732,7 @@ def seed_minimal_lead(data_home: TestDataHome, posting_id: str = "1234567890") -
     _append_event(
         data_home.shobr_data / "discovery" / "events.jsonl",
         {
-            "fetched_at": "2026-09-13T00:00:00+00:00",
+            "fetched_at": fetched_at,
             "query": seed_discovery_query(),
             "rows": [
                 {
@@ -741,7 +745,7 @@ def seed_minimal_lead(data_home: TestDataHome, posting_id: str = "1234567890") -
             ],
         },
     )
-    seed_enrichment_event(data_home, posting_id)
+    seed_enrichment_event(data_home, posting_id, fetched_at=fetched_at)
 
 
 def seed_enrichment_event(
@@ -1565,6 +1569,280 @@ class TestCLI(unittest.TestCase):
                     self.assertTrue(
                         all(row["discovered_via_query"] == first_query for row in second_rows)
                     )
+
+    def test_cooldown_boundary(self) -> None:
+        """Cooldown rejects at exactly N days, passes at N+1 (discovery)."""
+        cases = (
+            ("2026-06-15T00:00:00+00:00", True),
+            ("2026-06-14T00:00:00+00:00", False),
+        )
+        for tracked_at, rejected in cases:
+            with TestDataHome() as data_home:
+                seed_minimal_lead(data_home, posting_id="1111111111")
+                seed_minimal_lead(data_home, posting_id="2222222222")
+                seed_test_config(
+                    data_home,
+                    CONFIG_DEFAULT.replace(
+                        "stale_after_days = 2",
+                        "stale_after_days = 2\nreject_recent_application_days = 90",
+                    ),
+                )
+                seed_tailored_package(data_home, posting_id="1111111111")
+                _append_event(
+                    data_home.shobr_data / "tracking" / "events.jsonl",
+                    {
+                        "tracked_at": tracked_at,
+                        "posting_id": "1111111111",
+                        "status": "applied",
+                        "note": None,
+                    },
+                )
+                result = shobr("discovered", env=data_home.env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                blocks = result.stdout.split("[TestCo]")
+                sibling = next(b for b in blocks if "2222222222" in b)
+                own = next(b for b in blocks if "1111111111" in b)
+                self.assertEqual("REJECTED" in sibling, rejected, tracked_at)
+                if rejected:
+                    self.assertIn("recent application at same company", sibling)
+                self.assertNotIn("REJECTED", own)
+
+    def test_cooldown_leaves_applied_rows_actionable(self) -> None:
+        """Two applied rows at one company never cooldown-reject each other."""
+        with TestDataHome() as data_home:
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_minimal_lead(data_home, posting_id="1111111111", fetched_at=now)
+            seed_minimal_lead(data_home, posting_id="2222222222", fetched_at=now)
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT.replace(
+                    "stale_after_days = 2",
+                    "stale_after_days = 2\nreject_recent_application_days = 90",
+                ),
+            )
+            seed_tailored_package(data_home, posting_id="1111111111")
+            _append_event(
+                data_home.shobr_data / "tailoring" / "events.jsonl",
+                {
+                    "tailored_at": "2026-09-13T00:00:00+00:00",
+                    "posting_id": "2222222222",
+                    "slug": "testco-2222222222",
+                    "app_dir": "/tmp/2222222222",
+                    "rewrites": 0,
+                    "resume_md": "seeded resume",
+                    "cover_md": "seeded cover",
+                },
+            )
+            for pid in ("1111111111", "2222222222"):
+                result = shobr("track", pid, "applied", env=data_home.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            result = shobr("discovered", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("REJECTED", result.stdout)
+            self.assertNotIn("recent application at same company", result.stdout)
+
+    def test_cooldown_withdraw_unrejects(self) -> None:
+        """Withdrawing the application lifts the sibling cooldown rejection."""
+        with TestDataHome() as data_home:
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_minimal_lead(data_home, posting_id="1111111111", fetched_at=now)
+            seed_minimal_lead(data_home, posting_id="2222222222", fetched_at=now)
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT.replace(
+                    "stale_after_days = 2",
+                    "stale_after_days = 2\nreject_recent_application_days = 90",
+                ),
+            )
+            seed_tailored_package(data_home, posting_id="1111111111")
+            result = shobr("track", "1111111111", "applied", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = shobr("discovered", env=data_home.env)
+            self.assertIn("recent application at same company", result.stdout)
+            result = shobr("track", "1111111111", "withdrawn", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = shobr("discovered", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("recent application at same company", result.stdout)
+
+    def test_cooldown_without_enrichment_log(self) -> None:
+        """discovered with the key on works when no enrichment log exists."""
+        with TestDataHome() as data_home:
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT.replace(
+                    "stale_after_days = 2",
+                    "stale_after_days = 2\nreject_recent_application_days = 90",
+                ),
+            )
+            discovery_dir = data_home.shobr_data / "discovery"
+            discovery_dir.mkdir(parents=True, exist_ok=True)
+            (discovery_dir / "events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "fetched_at": "2026-09-13T00:00:00+00:00",
+                        "query": seed_discovery_query(),
+                        "rows": [
+                            {
+                                "posting_id": "1234567890",
+                                "posting_url": "https://www.linkedin.com/jobs/view/1234567890",
+                                "title": "Test Engineer",
+                                "company": "TestCo",
+                                "location": "Testville",
+                            }
+                        ],
+                    }
+                )
+                + "\n"
+            )
+            result = shobr("discovered", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("[TestCo]", result.stdout)
+            self.assertNotIn("recent application at same company", result.stdout)
+
+    def test_cooldown_enrich_next_skips_but_enrich_records_rejected(self) -> None:
+        """A cooldown-rejected lead is skipped by enrich-next, but enrich <id>
+        still records it, re-judged rejected at enrichment with a grouped reason."""
+        profile = f"test-{os.getpid()}-shobr-cooldown-enrich"
+        with TestDataHome(name="cooldown-enrich") as data_home:
+            env = data_home.env
+            result = shobr("setup", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            seed_minimal_lead(data_home, posting_id="1111111111")
+            seed_minimal_lead(data_home, posting_id="2222222222")
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT.replace(
+                    "stale_after_days = 2",
+                    "stale_after_days = 2\nreject_recent_application_days = 90",
+                ),
+            )
+            seed_tailored_package(data_home, posting_id="1111111111")
+            result = shobr("track", "1111111111", "applied", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            result = shobr("enrich-next", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("no leads to enrich", result.stdout)
+
+            detail = _read_fixture("job-detail.html")
+            with FakeLinkedInServer({"/jobs/view/2222222222": detail}) as server:
+                with TestBeachpatrolInstance(data_home.env, profile):
+                    env_run = {
+                        **data_home.env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+                    result = shobr("enrich", "2222222222", env=env_run)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("REJECTED: recent application at same company", result.stdout)
+
+            rows = json.loads(
+                (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
+            )["rows"]
+            self.assertFalse(rows["2222222222"]["actionable"])
+            self.assertEqual(
+                rows["2222222222"]["rejected_reason"],
+                "recent application at same company",
+            )
+            result = shobr("enriched", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("- recent application at same company x1", result.stdout)
+
+    def test_cooldown_config_validation(self) -> None:
+        """reject_recent_application_days rejects non-integer, bool, and negative."""
+        for raw in ('"x"', "true", "-1"):
+            with TestDataHome() as data_home:
+                seed_minimal_lead(data_home)
+                seed_test_config(
+                    data_home,
+                    CONFIG_DEFAULT.replace(
+                        "stale_after_days = 2",
+                        f"stale_after_days = 2\nreject_recent_application_days = {raw}",
+                    ),
+                )
+                result = shobr("discovered", env=data_home.env)
+                self.assertNotEqual(result.returncode, 0, raw)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertIn("reject_recent_application_days", result.stderr)
+
+    def test_cooldown_anchors_on_first_application(self) -> None:
+        """A later ghosted transition does not restart the sibling cooldown."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="1111111111")
+            seed_minimal_lead(data_home, posting_id="2222222222")
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT.replace(
+                    "stale_after_days = 2",
+                    "stale_after_days = 2\nreject_recent_application_days = 90",
+                ),
+            )
+            seed_tailored_package(data_home, posting_id="1111111111")
+            _append_event(
+                data_home.shobr_data / "tracking" / "events.jsonl",
+                {
+                    "tracked_at": "2026-05-01T00:00:00+00:00",
+                    "posting_id": "1111111111",
+                    "status": "applied",
+                    "note": None,
+                },
+            )
+            _append_event(
+                data_home.shobr_data / "tracking" / "events.jsonl",
+                {
+                    "tracked_at": "2026-09-01T00:00:00+00:00",
+                    "posting_id": "1111111111",
+                    "status": "ghosted",
+                    "note": None,
+                },
+            )
+            result = shobr("track", "1111111111", "ghosted", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            tracked = json.loads((data_home.shobr_data / "tracking" / "tracking.json").read_text())[
+                "rows"
+            ]
+            self.assertEqual(tracked["1111111111"]["first_tracked_at"], "2026-05-01T00:00:00+00:00")
+            result = shobr("discovered", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("recent application at same company", result.stdout)
+
+    def test_same_company_line_shows_latest(self) -> None:
+        """The company line names the latest application, not the earliest."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="1111111111")
+            seed_minimal_lead(data_home, posting_id="2222222222")
+            seed_minimal_lead(data_home, posting_id="3333333333")
+            seed_tailored_package(data_home, posting_id="1111111111")
+            _append_event(
+                data_home.shobr_data / "tailoring" / "events.jsonl",
+                {
+                    "tailored_at": "2026-09-13T00:00:00+00:00",
+                    "posting_id": "3333333333",
+                    "slug": "testco-3333333333",
+                    "app_dir": "/tmp/3333333333",
+                    "rewrites": 0,
+                    "resume_md": "seeded resume",
+                    "cover_md": "seeded cover",
+                },
+            )
+            _append_event(
+                data_home.shobr_data / "tracking" / "events.jsonl",
+                {
+                    "tracked_at": "2026-01-01T00:00:00+00:00",
+                    "posting_id": "1111111111",
+                    "status": "applied",
+                    "note": None,
+                },
+            )
+            result = shobr("track", "3333333333", "applied", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = shobr("enriched", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            blocks = result.stdout.split("[TestCo]")
+            line222 = next(b for b in blocks if "2222222222" in b)
+            today = datetime.now(UTC).date().isoformat()
+            self.assertIn(f"{today} (3333333333)", line222)
 
     def test_discover_second_snapshot_via_fake_linkedin(self) -> None:
         """A refreshed snapshot of the search page adds only

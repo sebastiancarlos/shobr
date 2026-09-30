@@ -52,8 +52,8 @@ TRACK_STATUS_COLORS = {
 }
 
 
-class TrackedRow(TypedDict):
-    """A job posting's tracking state as projected into tracking.json."""
+class TrackEvent(TypedDict):
+    """A recorded status transition."""
 
     posting_id: str
     status: TrackStatus
@@ -61,8 +61,10 @@ class TrackedRow(TypedDict):
     tracked_at: str
 
 
-class TrackEvent(TrackedRow):
-    """A recorded status transition."""
+class TrackedRow(TrackEvent):
+    """A job posting's tracking state as projected into tracking.json."""
+
+    first_tracked_at: str
 
 
 class TrackedStore(TypedDict):
@@ -73,17 +75,23 @@ class TrackedStore(TypedDict):
 
 
 def project_tracking() -> TrackedStore:
-    """Replay the tracking events log."""
+    """Replay the tracking events log.
+
+    Latest-wins per posting_id, plus the first transition time.
+    """
     if not (events := read_events(DataKind.TRACKING)):
         return {"tracked_at": None, "rows": {}}
     rows: dict[str, TrackedRow] = {}
+    first: dict[str, str] = {}
     for event in events:
         posting_id = event["posting_id"]
+        first.setdefault(posting_id, event["tracked_at"])
         rows[posting_id] = TrackedRow(
             posting_id=posting_id,
             status=TrackStatus(event["status"]),
             note=event["note"],
             tracked_at=event["tracked_at"],
+            first_tracked_at=first[posting_id],
         )
     return {"tracked_at": events[-1]["tracked_at"], "rows": rows}
 

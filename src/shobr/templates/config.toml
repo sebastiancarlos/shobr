@@ -36,6 +36,10 @@ presence_locations = ["testville"]
 # Stale leads get re-check recommendations.
 stale_after_days = 2
 
+# Reject leads at companies with a tracked application (any status but
+# withdrawn) within this many days of the lead's last sighting. 0 disables.
+# reject_recent_application_days = 90
+
 # Geo name to LinkedIn geoId map, the source of truth for geo targets above.
 # Obtain ids manually: search the place on LinkedIn Jobs and copy geoId=
 # from the resulting URL. Beware precision: LinkedIn often has several ids

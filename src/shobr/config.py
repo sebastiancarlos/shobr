@@ -33,6 +33,7 @@ class Config(TypedDict):
     beachpatrol_profile: str | None
     beachpatrol_browser: str
     stale_after_days: int
+    reject_recent_application_days: int
 
 
 _KNOWN_CONFIG_KEYS = frozenset(Config.__annotations__)
@@ -61,6 +62,14 @@ def _check_known(values: list[str], known: tuple[str, ...], noun: str) -> None:
             raise ShobrError(
                 f"config.toml: unknown {noun} {value!r} (known: {', '.join(sorted(known))})."
             )
+
+
+def _nonneg_int(data: dict, key: str, default: int) -> int:
+    """Parse a key from config.toml which should be a non-negative integer."""
+    raw = data.get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise ShobrError(f"config.toml: '{key}' must be a non-negative integer")
+    return raw
 
 
 @functools.lru_cache(maxsize=1)
@@ -132,9 +141,8 @@ def load_config() -> Config:
         "employment type",
     )
 
-    raw_stale = data.get("stale_after_days", 2)
-    if isinstance(raw_stale, bool) or not isinstance(raw_stale, int) or raw_stale < 0:
-        raise ShobrError("config.toml: 'stale_after_days' must be a non-negative integer")
+    raw_stale = _nonneg_int(data, "stale_after_days", 2)
+    raw_cooldown = _nonneg_int(data, "reject_recent_application_days", 0)
 
     raw_dir = data.get("cv_toolchain_dir")
     if not isinstance(raw_dir, str) or not raw_dir:
@@ -158,6 +166,7 @@ def load_config() -> Config:
         "beachpatrol_profile": raw_profile,
         "beachpatrol_browser": raw_browser,
         "stale_after_days": raw_stale,
+        "reject_recent_application_days": raw_cooldown,
     }
 
 

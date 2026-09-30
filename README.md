@@ -349,6 +349,15 @@ important to re-enrich stale leads to ensure they're still open.
 Costly actions (screening, tailoring, etc) refuse stale rows unless passing
 `--force`.
 
+#### `reject_recent_application_days` (optional integer, default `0`/off)
+
+```toml
+reject_recent_application_days = 90
+```
+
+Reject leads at companies with already tracked application, within this many
+days of the lead's last sighting.
+
 #### `[reject_title]` (optional table, label = Python regex)
 
 ```toml

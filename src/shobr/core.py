@@ -192,35 +192,70 @@ def stage_line(posting_id: str, after: DataKind) -> str:
     return f"  - Stage: {stage.value}{detail}"
 
 
-def same_company_line(company: str, posting_id: str, *, plain: bool = False) -> str | None:
-    """Yellow 'Last Applied To Same Company' line for another posting's row.
+def applications_by_company(companies: dict[str, str]) -> dict[str, dict[str, str]]:
+    """For all passed companies, return posting_id and first_tracked_time for non-withdrawn rows.
 
-    Latest non-withdrawn tracking event at `company`, excluding `posting_id`
-    itself. With `plain`, markdown without ANSI (for the $EDITOR template).
+    Callers pass a {pid: company} map, so this never touches the enrichment
+    store (which would recurse from inside the projections that call it).
+    Withdrawn pids are not considered.
     """
     from .tracking import TrackStatus, project_tracking
 
-    if not event_log(DataKind.TRACKING).exists():
+    # {company: {posting_id: first_tracked_at}}
+    apps_by_company: dict[str, dict[str, str]] = {}
+
+    for pid, row in project_tracking()["rows"].items():
+        if row["status"] == TrackStatus.WITHDRAWN:
+            continue
+        if pid not in companies:
+            continue
+        apps_by_company.setdefault(companies[pid], {})[pid] = row["first_tracked_at"]
+    return apps_by_company
+
+
+def cooldown_rejection_reason(
+    apps_by_company: dict[str, dict[str, str]],
+    posting_id: str,
+    company: str,
+    last_seen: str,
+    days: int,
+) -> str | None:
+    """Reject a lead with a recent same-company application in `apps_by_company`.
+
+    `last_seen` is the lead's last observation time, which is the time to be
+    compared to any same-company application's time.
+    """
+    apps = apps_by_company.get(company, {})
+    if days <= 0 or posting_id in apps:
         return None
+    seen = datetime.fromisoformat(last_seen).date()
+    for at in apps.values():
+        if abs((datetime.fromisoformat(at).date() - seen).days) <= days:
+            return "recent application at same company"
+    return None
+
+
+def same_company_line(company: str, posting_id: str, *, plain: bool = False) -> str | None:
+    """Generate 'Last Applied To Same Company' line for another posting's row.
+
+    Latest date in which a non-withdrawn lead was first tracked for `company`,
+    excluding `posting_id` itself. With `plain`, markdown without ANSI (for the
+    $EDITOR template).
+    """
     if not event_log(DataKind.ENRICHMENT).exists():
         return None
     from .enrichment import project_enrichment
 
     companies = {pid: row["company"] for pid, row in project_enrichment()["rows"].items()}
-    latest: tuple[str, str] | None = None
-    for pid, tracked in project_tracking()["rows"].items():
-        if pid == posting_id or tracked["status"] == TrackStatus.WITHDRAWN:
-            continue
-        if companies.get(pid) != company:
-            continue
-        if latest is None or tracked["tracked_at"] > latest[0]:
-            latest = (tracked["tracked_at"], pid)
-    if latest is None:
+    apps = applications_by_company(companies).get(company, {})
+    candidates = [(at, pid) for pid, at in apps.items() if pid != posting_id]
+    if not candidates:
         return None
-    date = datetime.fromisoformat(latest[0]).date().isoformat()
+    at, pid = max(candidates)
+    date = datetime.fromisoformat(at).date().isoformat()
     if plain:
-        return f"- Last Applied To Same Company: {date} ({latest[1]})"
-    return f"  - {YELLOW}Last Applied To Same Company:{RESET} {date} ({latest[1]})"
+        return f"- Last Applied To Same Company: {date} ({pid})"
+    return f"  - {YELLOW}Last Applied To Same Company:{RESET} {date} ({pid})"
 
 
 def rejected_tag(reason: str) -> str:

@@ -16,7 +16,9 @@ from .core import (
     EmploymentType,
     LocationType,
     ShobrError,
+    applications_by_company,
     closed_tag,
+    cooldown_rejection_reason,
     paged,
     persist_event,
     read_events,
@@ -77,7 +79,9 @@ class EnrichedStore(TypedDict):
     rows: dict[str, EnrichedRow]  # keyed by posting_id
 
 
-def _reject_enriched(row: EnrichmentEvent, filters: Config) -> str | None:
+def _reject_enriched(
+    row: EnrichmentEvent, apps_by_company: dict[str, dict[str, str]], filters: Config
+) -> str | None:
     """Return a rejection reason if the job fails the post-enrichment pre-filter."""
     reason = base_reject_reason(row["location"], row["location_type"], row["title"], filters)
     if reason is not None:
@@ -88,7 +92,13 @@ def _reject_enriched(row: EnrichmentEvent, filters: Config) -> str | None:
         return f"employment type is {row['employment_type']}"
     if not row["accepting_applications"]:
         return "no longer accepting applications"
-    return None
+    return cooldown_rejection_reason(
+        apps_by_company,
+        row["posting_id"],
+        row["company"],
+        row["fetched_at"],
+        filters["reject_recent_application_days"],
+    )
 
 
 def project_enrichment() -> EnrichedStore:
@@ -106,8 +116,11 @@ def project_enrichment() -> EnrichedStore:
 
     rows = {}
     filters = load_config()
+    cooldown_days = filters["reject_recent_application_days"]
+    companies = {pid: row["company"] for pid, row in latest.items()}
+    apps_by_company = applications_by_company(companies) if cooldown_days > 0 else {}
     for posting_id, row in latest.items():
-        rejected_reason = _reject_enriched(row, filters)
+        rejected_reason = _reject_enriched(row, apps_by_company, filters)
         rows[posting_id] = cast(
             EnrichedRow,
             {

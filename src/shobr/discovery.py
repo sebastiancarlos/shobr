@@ -13,6 +13,8 @@ from .core import (
     DataKind,
     LocationType,
     ShobrError,
+    applications_by_company,
+    cooldown_rejection_reason,
     paged,
     persist_event,
     read_events,
@@ -118,6 +120,7 @@ def project_discovery() -> DiscoveredStore:
     if not (events := read_events(DataKind.DISCOVERY)):
         return {"fetched_at": None, "rows": []}
     first_seen: dict[str, str] = {}
+    last_seen: dict[str, str] = {}
     first_query: dict[str, DiscoveryQuery] = {}
     latest: dict[str, JobRow] = {}
 
@@ -126,12 +129,24 @@ def project_discovery() -> DiscoveredStore:
         for row in event["rows"]:
             latest[row["posting_id"]] = row
             first_seen.setdefault(row["posting_id"], event["fetched_at"])
+            last_seen[row["posting_id"]] = event["fetched_at"]
             first_query.setdefault(row["posting_id"], event["query"])
 
     filters = load_config()
+    cooldown_days = filters["reject_recent_application_days"]
+    companies = {pid: row["company"] for pid, row in latest.items()}
+    apps_by_company = applications_by_company(companies) if cooldown_days > 0 else {}
     rows: list[StoredJob] = []
     for posting_id in latest:
         rejected_reason = _reject_job(latest[posting_id], filters)
+        if rejected_reason is None:
+            rejected_reason = cooldown_rejection_reason(
+                apps_by_company,
+                posting_id,
+                latest[posting_id]["company"],
+                last_seen[posting_id],
+                cooldown_days,
+            )
         rows.append(
             cast(
                 StoredJob,
