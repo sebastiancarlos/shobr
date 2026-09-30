@@ -36,10 +36,19 @@ class JobRow(TypedDict):
     location: str
 
 
+class DiscoveryQuery(TypedDict):
+    """The search params behind one discovery fetch."""
+
+    titles: list[str]
+    workplace_types: list[str]
+    geo: list[str]
+
+
 class _DiscoverEvent(TypedDict):
     """One search-results fetch."""
 
     fetched_at: str
+    query: DiscoveryQuery
     rows: list[JobRow]
 
 
@@ -47,6 +56,7 @@ class StoredJob(JobRow):
     """Job as stored, with first-sighting metadata and pre-filtering"""
 
     first_seen_at: str
+    discovered_via_query: DiscoveryQuery
     actionable: bool
     rejected_reason: str | None
 
@@ -108,6 +118,7 @@ def project_discovery() -> DiscoveredStore:
     if not (events := read_events(DataKind.DISCOVERY)):
         return {"fetched_at": None, "rows": []}
     first_seen: dict[str, str] = {}
+    first_query: dict[str, DiscoveryQuery] = {}
     latest: dict[str, JobRow] = {}
 
     for raw in events:
@@ -115,6 +126,7 @@ def project_discovery() -> DiscoveredStore:
         for row in event["rows"]:
             latest[row["posting_id"]] = row
             first_seen.setdefault(row["posting_id"], event["fetched_at"])
+            first_query.setdefault(row["posting_id"], event["query"])
 
     filters = load_config()
     rows: list[StoredJob] = []
@@ -126,6 +138,7 @@ def project_discovery() -> DiscoveredStore:
                 {
                     **latest[posting_id],
                     "first_seen_at": first_seen[posting_id],
+                    "discovered_via_query": first_query[posting_id],
                     "actionable": rejected_reason is None,
                     "rejected_reason": rejected_reason,
                 },
@@ -233,6 +246,11 @@ def discover() -> None:
     fetched_at = datetime.now(UTC)
     new: _DiscoverEvent = {
         "fetched_at": fetched_at.isoformat(timespec="seconds"),
+        "query": {
+            "titles": filters["titles"],
+            "workplace_types": filters["workplace_types"],
+            "geo": filters["geo"],
+        },
         "rows": rows,
     }
     leads = persist_event(DataKind.DISCOVERY, new, project_discovery)

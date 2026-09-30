@@ -709,6 +709,15 @@ def seed_tailored_package(data_home: TestDataHome, posting_id: str = "5550000001
     )
 
 
+def seed_discovery_query() -> dict[str, list[str]]:
+    """Discovery query matching the default test config."""
+    return {
+        "titles": ["Technical Lead", "Software Engineer", "Senior Software Engineer"],
+        "workplace_types": ["on-site", "hybrid", "remote"],
+        "geo": ["testville-city", "testville-dept"],
+    }
+
+
 def seed_minimal_lead(data_home: TestDataHome, posting_id: str = "1234567890") -> None:
     """Seed one passing lead plus its passing enrichment (no browser).
 
@@ -720,6 +729,7 @@ def seed_minimal_lead(data_home: TestDataHome, posting_id: str = "1234567890") -
         data_home.shobr_data / "discovery" / "events.jsonl",
         {
             "fetched_at": "2026-09-13T00:00:00+00:00",
+            "query": seed_discovery_query(),
             "rows": [
                 {
                     "posting_id": posting_id,
@@ -1397,6 +1407,18 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(len(events), 1)
                     event = events[0]
                     self.assertNotIn(".", event["fetched_at"])
+                    self.assertEqual(
+                        event["query"],
+                        {
+                            "titles": [
+                                "Technical Lead",
+                                "Software Engineer",
+                                "Senior Software Engineer",
+                            ],
+                            "workplace_types": ["on-site", "hybrid", "remote"],
+                            "geo": ["testville-city", "testville-dept"],
+                        },
+                    )
                     rows = event["rows"]
                     raw_keys = {"company", "location", "posting_id", "posting_url", "title"}
                     self.assertEqual(len(rows), 12)
@@ -1421,9 +1443,18 @@ class TestCLI(unittest.TestCase):
                     self.assertTrue(
                         all(
                             set(row)
-                            == raw_keys | {"first_seen_at", "actionable", "rejected_reason"}
+                            == raw_keys
+                            | {
+                                "first_seen_at",
+                                "discovered_via_query",
+                                "actionable",
+                                "rejected_reason",
+                            }
                             for row in leads["rows"]
                         )
+                    )
+                    self.assertTrue(
+                        all(row["discovered_via_query"] == event["query"] for row in leads["rows"])
                     )
                     self.assertIn("12 jobs (8 rejected. 12 newly seen)\n", result.stdout)
                     for row in leads["rows"]:
@@ -1485,6 +1516,56 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(len(events_path.read_text().splitlines()), 2)
                     self.assertEqual(json.loads(discovery_path.read_text()), leads2)
 
+    def test_discovered_keeps_first_query(self) -> None:
+        """Re-seen rows keep the query that first surfaced them."""
+        profile = f"test-{os.getpid()}-shobr-first-query"
+        with TestDataHome(name="first-query") as data_home:
+            env = data_home.env
+            result = shobr("setup", env=env)
+            seed_test_config(data_home)
+            search = _read_fixture("job-search.html")
+            with FakeLinkedInServer({"/jobs/search-results": search}) as server:
+                with TestBeachpatrolInstance(env, profile):
+                    env_run = {
+                        **env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+
+                    result = shobr("discover", env=env_run)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    discovery_path = data_home.shobr_data / "discovery" / "discovery.json"
+                    first_rows = json.loads(discovery_path.read_text())["rows"]
+                    self.assertTrue(first_rows)
+                    first_query = first_rows[0]["discovered_via_query"]
+                    self.assertTrue(
+                        all(row["discovered_via_query"] == first_query for row in first_rows)
+                    )
+
+                    seed_test_config(
+                        data_home,
+                        CONFIG_DEFAULT.replace(
+                            'titles = ["Technical Lead", "Software Engineer", '
+                            '"Senior Software Engineer"]',
+                            'titles = ["Python Developer"]',
+                        ),
+                    )
+                    _cross_second_boundary()
+                    result = shobr("discover", env=env_run)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    events = [
+                        json.loads(line)
+                        for line in (data_home.shobr_data / "discovery" / "events.jsonl")
+                        .read_text()
+                        .splitlines()
+                    ]
+                    self.assertEqual(events[1]["query"]["titles"], ["Python Developer"])
+                    second_rows = json.loads(discovery_path.read_text())["rows"]
+                    self.assertEqual(len(second_rows), len(first_rows))
+                    self.assertTrue(
+                        all(row["discovered_via_query"] == first_query for row in second_rows)
+                    )
+
     def test_discover_second_snapshot_via_fake_linkedin(self) -> None:
         """A refreshed snapshot of the search page adds only
         genuinely new postings to the leads store; already-seen ones keep
@@ -1541,7 +1622,9 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(len(leads_2["rows"]), len(first_batch) + len(new_ids))
                     self.assertTrue(
                         all(
-                            "actionable" in row and "rejected_reason" in row
+                            "actionable" in row
+                            and "rejected_reason" in row
+                            and "discovered_via_query" in row
                             for row in leads_2["rows"]
                         )
                     )
@@ -1850,6 +1933,7 @@ class TestCLI(unittest.TestCase):
                 json.dumps(
                     {
                         "fetched_at": "2026-09-13T00:00:00+00:00",
+                        "query": seed_discovery_query(),
                         "rows": [
                             {
                                 "posting_id": posting_id,
@@ -4167,6 +4251,7 @@ class TestCLI(unittest.TestCase):
                 data_home.shobr_data / "discovery" / "events.jsonl",
                 {
                     "fetched_at": "2026-09-13T00:00:00+00:00",
+                    "query": seed_discovery_query(),
                     "rows": [
                         {
                             "posting_id": "5550000031",
