@@ -7,7 +7,7 @@ from collections.abc import Callable
 from .ai import smoke_test_completion
 from .browser import commands_install, smoke_test_browser
 from .core import ShobrError, __version__
-from .discovery import discover, discover_local
+from .discovery import discover, discover_local, discover_posting_id
 from .enrichment import enrich_next, enrich_posting_id, print_enriched
 from .notification import notifications, notifications_local
 from .pipeline import next_posting_id, print_status, run_next
@@ -83,10 +83,18 @@ def main() -> None:
 
     for name, help_text in [
         ("discovered", "print the stored job leads summary"),
-        ("discover", "parse the LinkedIn jobs search-results page into structured rows"),
         ("enriched", "print every enriched job detail stored so far"),
     ]:
         sub.add_parser(name, help=help_text)
+
+    sub.add_parser(
+        "discover",
+        help="parse the LinkedIn jobs search-results page into structured rows",
+    ).add_argument(
+        "posting_id",
+        nargs="?",
+        help="posting id or URL to add directly as a manual lead",
+    )
 
     sub.add_parser(
         "enrich",
@@ -231,7 +239,7 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         "smoke-test-llm": smoke_test_completion,
         "notifications": lambda: notifications_local() if args.local else notifications(),
         "discovered": discover_local,
-        "discover": discover,
+        "discover": lambda: discover_posting_id(args.posting_id) if args.posting_id else discover(),
         "enriched": print_enriched,
         "enrich": lambda: enrich_posting_id(args.posting_id),
         "enrich-next": enrich_next,

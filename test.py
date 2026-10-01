@@ -709,12 +709,15 @@ def seed_tailored_package(data_home: TestDataHome, posting_id: str = "5550000001
     )
 
 
-def seed_discovery_query() -> dict[str, list[str]]:
-    """Discovery query matching the default test config."""
+def seed_discovery_source() -> dict:
+    """Discovery source matching the default test config."""
     return {
-        "titles": ["Technical Lead", "Software Engineer", "Senior Software Engineer"],
-        "workplace_types": ["on-site", "hybrid", "remote"],
-        "geo": ["testville-city", "testville-dept"],
+        "type": "query",
+        "query": {
+            "titles": ["Technical Lead", "Software Engineer", "Senior Software Engineer"],
+            "workplace_types": ["on-site", "hybrid", "remote"],
+            "geo": ["testville-city", "testville-dept"],
+        },
     }
 
 
@@ -733,7 +736,7 @@ def seed_minimal_lead(
         data_home.shobr_data / "discovery" / "events.jsonl",
         {
             "fetched_at": fetched_at,
-            "query": seed_discovery_query(),
+            "source": seed_discovery_source(),
             "rows": [
                 {
                     "posting_id": posting_id,
@@ -1412,15 +1415,18 @@ class TestCLI(unittest.TestCase):
                     event = events[0]
                     self.assertNotIn(".", event["fetched_at"])
                     self.assertEqual(
-                        event["query"],
+                        event["source"],
                         {
-                            "titles": [
-                                "Technical Lead",
-                                "Software Engineer",
-                                "Senior Software Engineer",
-                            ],
-                            "workplace_types": ["on-site", "hybrid", "remote"],
-                            "geo": ["testville-city", "testville-dept"],
+                            "type": "query",
+                            "query": {
+                                "titles": [
+                                    "Technical Lead",
+                                    "Software Engineer",
+                                    "Senior Software Engineer",
+                                ],
+                                "workplace_types": ["on-site", "hybrid", "remote"],
+                                "geo": ["testville-city", "testville-dept"],
+                            },
                         },
                     )
                     rows = event["rows"]
@@ -1450,7 +1456,7 @@ class TestCLI(unittest.TestCase):
                             == raw_keys
                             | {
                                 "first_seen_at",
-                                "discovered_via_query",
+                                "discovered_method",
                                 "actionable",
                                 "rejected_reason",
                             }
@@ -1458,7 +1464,7 @@ class TestCLI(unittest.TestCase):
                         )
                     )
                     self.assertTrue(
-                        all(row["discovered_via_query"] == event["query"] for row in leads["rows"])
+                        all(row["discovered_method"] == event["source"] for row in leads["rows"])
                     )
                     self.assertIn("12 jobs (8 rejected. 12 newly seen)\n", result.stdout)
                     for row in leads["rows"]:
@@ -1541,9 +1547,10 @@ class TestCLI(unittest.TestCase):
                     discovery_path = data_home.shobr_data / "discovery" / "discovery.json"
                     first_rows = json.loads(discovery_path.read_text())["rows"]
                     self.assertTrue(first_rows)
-                    first_query = first_rows[0]["discovered_via_query"]
+                    first_source = first_rows[0]["discovered_method"]
+                    self.assertEqual(first_source["type"], "query")
                     self.assertTrue(
-                        all(row["discovered_via_query"] == first_query for row in first_rows)
+                        all(row["discovered_method"] == first_source for row in first_rows)
                     )
 
                     seed_test_config(
@@ -1563,11 +1570,11 @@ class TestCLI(unittest.TestCase):
                         .read_text()
                         .splitlines()
                     ]
-                    self.assertEqual(events[1]["query"]["titles"], ["Python Developer"])
+                    self.assertEqual(events[1]["source"]["query"]["titles"], ["Python Developer"])
                     second_rows = json.loads(discovery_path.read_text())["rows"]
                     self.assertEqual(len(second_rows), len(first_rows))
                     self.assertTrue(
-                        all(row["discovered_via_query"] == first_query for row in second_rows)
+                        all(row["discovered_method"] == first_source for row in second_rows)
                     )
 
     def test_cooldown_boundary(self) -> None:
@@ -1681,7 +1688,7 @@ class TestCLI(unittest.TestCase):
                 json.dumps(
                     {
                         "fetched_at": "2026-09-13T00:00:00+00:00",
-                        "query": seed_discovery_query(),
+                        "source": seed_discovery_source(),
                         "rows": [
                             {
                                 "posting_id": "1234567890",
@@ -1902,7 +1909,7 @@ class TestCLI(unittest.TestCase):
                         all(
                             "actionable" in row
                             and "rejected_reason" in row
-                            and "discovered_via_query" in row
+                            and "discovered_method" in row
                             for row in leads_2["rows"]
                         )
                     )
@@ -1968,6 +1975,135 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("2 jobs (0 rejected. 2 newly seen)\n", result.stdout)
                     self.assertIn("[Acme]", result.stdout)
+
+    def test_discover_posting_id_records_lead_and_enrichment(self) -> None:
+        """'shobr discover <id>' records a manual lead plus its enrichment."""
+        detail = _read_fixture("job-detail-manual-open.html")
+
+        profile = f"test-{os.getpid()}-shobr-discover-id"
+        with TestDataHome(name="discover-id") as data_home:
+            env = data_home.env
+            result = shobr("setup", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            seed_test_config(data_home)
+
+            with FakeLinkedInServer({"/jobs/view/5550000009": detail}) as server:
+                with TestBeachpatrolInstance(env, profile):
+                    env_run = {
+                        **env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+                    result = shobr("discover", "5550000009", env=env_run)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("[FakeCo] 5550000009", result.stdout)
+
+            discovery_rows = json.loads(
+                (data_home.shobr_data / "discovery" / "discovery.json").read_text()
+            )["rows"]
+            self.assertEqual(len(discovery_rows), 1)
+            lead = discovery_rows[0]
+            self.assertEqual(lead["title"], "Lead Widget Engineer (Remote)")
+            self.assertEqual(lead["company"], "FakeCo")
+            self.assertEqual(lead["location"], "Testville")
+            self.assertEqual(lead["posting_url"], "https://www.linkedin.com/jobs/view/5550000009")
+            self.assertEqual(lead["discovered_method"], {"type": "manual"})
+            self.assertTrue(lead["actionable"])
+
+            enriched_rows = json.loads(
+                (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
+            )["rows"]
+            self.assertTrue(enriched_rows["5550000009"]["actionable"])
+            self.assertEqual(enriched_rows["5550000009"]["apply_method"], "external")
+
+            events = [
+                json.loads(line)
+                for line in (data_home.shobr_data / "discovery" / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            self.assertEqual(events[0]["source"], {"type": "manual"})
+
+    def test_discover_posting_id_accepts_url_and_marks_closed(self) -> None:
+        """'shobr discover <url>' canonicalizes the URL; closed postings land rejected."""
+        detail = _read_fixture("job-detail-manual-closed.html")
+
+        profile = f"test-{os.getpid()}-shobr-discover-url"
+        with TestDataHome(name="discover-url") as data_home:
+            env = data_home.env
+            result = shobr("setup", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            seed_test_config(data_home)
+
+            url = "https://www.linkedin.com/jobs/view/5550000010/?refId=abc&trk=x"
+            with FakeLinkedInServer({"/jobs/view/5550000010": detail}) as server:
+                with TestBeachpatrolInstance(env, profile):
+                    env_run = {
+                        **env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+                    result = shobr("discover", url, env=env_run)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(
+                        "[FakeCo] 5550000010 (REJECTED: no longer accepting applications)",
+                        result.stdout,
+                    )
+
+            lead = json.loads((data_home.shobr_data / "discovery" / "discovery.json").read_text())[
+                "rows"
+            ][0]
+            self.assertEqual(lead["title"], "Senior Widget Engineer")
+            self.assertEqual(lead["company"], "FakeCo")
+            self.assertEqual(lead["location"], "Testville (Remote)")
+            self.assertEqual(lead["posting_url"], "https://www.linkedin.com/jobs/view/5550000010")
+            self.assertNotIn("refId", lead["posting_url"])
+
+    def test_discover_posting_id_known_id_points_to_enrich(self) -> None:
+        """'shobr discover <id>' on a known lead refuses with an enrich pointer."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            result = shobr("discover", "1234567890", env=data_home.env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertIn("already a known lead", result.stderr)
+            self.assertIn("shobr enrich 1234567890", result.stderr)
+
+    def test_discover_posting_id_bad_target(self) -> None:
+        """'shobr discover' with no extractable id fails loudly."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            result = shobr("discover", "notanid", env=data_home.env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertIn("could not extract a posting id", result.stderr)
+
+    def test_discover_posting_id_refuses_headerless_page(self) -> None:
+        """'shobr discover <id>' on a page without header hooks writes nothing."""
+        detail = _read_fixture("job-detail.html")
+
+        profile = f"test-{os.getpid()}-shobr-discover-headerless"
+        with TestDataHome(name="discover-headerless") as data_home:
+            env = data_home.env
+            result = shobr("setup", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            seed_test_config(data_home)
+
+            with FakeLinkedInServer({"/jobs/view/5550000001": detail}) as server:
+                with TestBeachpatrolInstance(env, profile):
+                    env_run = {
+                        **env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+                    result = shobr("discover", "5550000001", env=env_run)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertIn("no discovery-stage fields", result.stderr)
+                    discovery_dir = data_home.shobr_data / "discovery"
+                    self.assertFalse((discovery_dir / "events.jsonl").exists())
+                    self.assertFalse((discovery_dir / "discovery.json").exists())
+                    self.assertFalse((data_home.shobr_data / "enrichment").exists())
 
     def test_discovered_with_no_data(self) -> None:
         """discovered on a fresh data home fails offline, writes nothing."""
@@ -2211,7 +2347,7 @@ class TestCLI(unittest.TestCase):
                 json.dumps(
                     {
                         "fetched_at": "2026-09-13T00:00:00+00:00",
-                        "query": seed_discovery_query(),
+                        "source": seed_discovery_source(),
                         "rows": [
                             {
                                 "posting_id": posting_id,
@@ -4529,7 +4665,7 @@ class TestCLI(unittest.TestCase):
                 data_home.shobr_data / "discovery" / "events.jsonl",
                 {
                     "fetched_at": "2026-09-13T00:00:00+00:00",
-                    "query": seed_discovery_query(),
+                    "source": seed_discovery_source(),
                     "rows": [
                         {
                             "posting_id": "5550000031",

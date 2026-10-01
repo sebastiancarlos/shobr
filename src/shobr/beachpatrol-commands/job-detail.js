@@ -133,6 +133,40 @@ export default async ({ context }, url) => {
         }
       }
 
+      // header fields, for manual discovery
+      const scope = document.querySelector("main") || document;
+      let title = null;
+      let company = null;
+      let location = null;
+      const companyDiv = scope.querySelector('div[aria-label^="Company,"]');
+      if (companyDiv) {
+        const companyLink = companyDiv.querySelector('a[href*="/company/"]');
+        const label = companyDiv.getAttribute("aria-label") || "";
+        const fromLabel = label
+          .replace(/^Company,\s*/, "")
+          .replace(/\.\s*$/, "")
+          .trim();
+        company = (companyLink?.textContent || "").trim() || fromLabel || null;
+      }
+      for (const p of scope.querySelectorAll("p")) {
+        if (companyDiv && companyDiv.contains(p)) continue;
+        if (p.closest('div[role="button"], button')) continue;
+        if (p.closest('[data-testid="expandable-text-box"], [id^="JobDetails_AboutTheJob_"]')) {
+          continue;
+        }
+        const text = (p.textContent || "").trim();
+        if (!text) continue;
+        if (text.includes("·")) {
+          if (location === null) {
+            const first = p.querySelector("span");
+            const beforeDot = text.split("·")[0].trim();
+            location = ((first?.textContent || "").trim() || beforeDot) || null;
+          }
+          continue;
+        }
+        if (title === null) title = text;
+      }
+
       return {
         job_description_html,
         company_description_html,
@@ -142,6 +176,9 @@ export default async ({ context }, url) => {
         accepting_applications,
         apply_method,
         apply_url,
+        title,
+        company,
+        location,
       };
     });
 

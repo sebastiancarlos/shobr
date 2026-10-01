@@ -50,6 +50,9 @@ class JobDetail(TypedDict):
     accepting_applications: bool
     apply_method: str | None
     apply_url: str | None
+    title: str | None
+    company: str | None
+    location: str | None
 
 
 class EnrichmentEvent(JobRow, JobDetail):
@@ -59,6 +62,9 @@ class EnrichmentEvent(JobRow, JobDetail):
     fields are stored in markdown, with the raw HTML kept alongside.
     """
 
+    title: str
+    company: str
+    location: str
     job_description: str
     company_description: str
     fetched_at: str
@@ -318,12 +324,10 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     print_description_block("Company description", row["company_description"], truncate=truncate)
 
 
-def _enrich_one(target: StoredJob) -> None:
-    """Fetch and persist the detail for a single known lead."""
-    nav_url = f"{LINKEDIN_BASE_URL}/jobs/view/{target['posting_id']}"
-    raw = beachmsg_json("job-detail", nav_url)
-    detail = cast(JobDetail, raw)
-
+def build_enrichment_event(
+    target: JobRow, detail: JobDetail, fetched_at: datetime
+) -> EnrichmentEvent:
+    """Validate a fetched detail and build its event (no writes)."""
     job_description = _html_to_markdown(detail["job_description_html"])
     company_description = _html_to_markdown(detail["company_description_html"])
     if job_description is None or not job_description.strip():
@@ -341,10 +345,7 @@ def _enrich_one(target: StoredJob) -> None:
         )
     if company_description is None:
         company_description = ""
-
-    # persist event
-    fetched_at = datetime.now(UTC)
-    row: EnrichmentEvent = {
+    return {
         "fetched_at": fetched_at.isoformat(timespec="seconds"),
         "posting_id": target["posting_id"],
         "posting_url": target["posting_url"],
@@ -362,7 +363,14 @@ def _enrich_one(target: StoredJob) -> None:
         "apply_method": detail["apply_method"],
         "apply_url": detail["apply_url"],
     }
-    # persist to store
+
+
+def _enrich_one(target: StoredJob) -> None:
+    """Fetch and persist the detail for a single known lead."""
+    nav_url = f"{LINKEDIN_BASE_URL}/jobs/view/{target['posting_id']}"
+    raw = beachmsg_json("job-detail", nav_url)
+    detail = cast(JobDetail, raw)
+    row = build_enrichment_event(target, detail, datetime.now(UTC))
     enriched = persist_event(DataKind.ENRICHMENT, row, project_enrichment)
 
     print_enriched_row(enriched["rows"][target["posting_id"]])

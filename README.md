@@ -185,6 +185,8 @@ and locations, running them through a basic regex pre-filter.
   - Prints the stored leads summary without fetching.
 - **`shobr discover`**
   - Triggers `beachpatrol` to search and scrape leads.
+- **`shobr discover <posting_id-or-URL>`**
+  - Adds one posting directly as a manual lead (no search).
 
 ### 2. Enrichment
 

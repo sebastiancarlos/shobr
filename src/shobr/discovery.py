@@ -1,8 +1,9 @@
 """The discovery stage: Obtaining job leads in bulk."""
 
+import re
 from collections import Counter
 from datetime import UTC, datetime
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 from urllib.parse import urlencode
 
 from .browser import beachmsg_json
@@ -15,6 +16,7 @@ from .core import (
     ShobrError,
     applications_by_company,
     cooldown_rejection_reason,
+    event_log,
     paged,
     persist_event,
     read_events,
@@ -26,6 +28,9 @@ from .core import (
     stage_line,
     store_path,
 )
+
+if TYPE_CHECKING:
+    from .enrichment import JobDetail
 
 
 class JobRow(TypedDict):
@@ -46,11 +51,27 @@ class DiscoveryQuery(TypedDict):
     geo: list[str]
 
 
+class QuerySource(TypedDict):
+    """A lead surfaced by a search fetch."""
+
+    type: Literal["query"]
+    query: DiscoveryQuery
+
+
+class ManualSource(TypedDict):
+    """A lead added directly, with no search behind it."""
+
+    type: Literal["manual"]
+
+
+DiscoverySource = QuerySource | ManualSource
+
+
 class _DiscoverEvent(TypedDict):
-    """One search-results fetch."""
+    """One search-results fetch, or one direct add."""
 
     fetched_at: str
-    query: DiscoveryQuery
+    source: DiscoverySource
     rows: list[JobRow]
 
 
@@ -58,7 +79,7 @@ class StoredJob(JobRow):
     """Job as stored, with first-sighting metadata and pre-filtering"""
 
     first_seen_at: str
-    discovered_via_query: DiscoveryQuery
+    discovered_method: DiscoverySource
     actionable: bool
     rejected_reason: str | None
 
@@ -121,7 +142,7 @@ def project_discovery() -> DiscoveredStore:
         return {"fetched_at": None, "rows": []}
     first_seen: dict[str, str] = {}
     last_seen: dict[str, str] = {}
-    first_query: dict[str, DiscoveryQuery] = {}
+    first_source: dict[str, DiscoverySource] = {}
     latest: dict[str, JobRow] = {}
 
     for raw in events:
@@ -130,7 +151,7 @@ def project_discovery() -> DiscoveredStore:
             latest[row["posting_id"]] = row
             first_seen.setdefault(row["posting_id"], event["fetched_at"])
             last_seen[row["posting_id"]] = event["fetched_at"]
-            first_query.setdefault(row["posting_id"], event["query"])
+            first_source.setdefault(row["posting_id"], event["source"])
 
     filters = load_config()
     cooldown_days = filters["reject_recent_application_days"]
@@ -153,7 +174,7 @@ def project_discovery() -> DiscoveredStore:
                 {
                     **latest[posting_id],
                     "first_seen_at": first_seen[posting_id],
-                    "discovered_via_query": first_query[posting_id],
+                    "discovered_method": first_source[posting_id],
                     "actionable": rejected_reason is None,
                     "rejected_reason": rejected_reason,
                 },
@@ -261,10 +282,13 @@ def discover() -> None:
     fetched_at = datetime.now(UTC)
     new: _DiscoverEvent = {
         "fetched_at": fetched_at.isoformat(timespec="seconds"),
-        "query": {
-            "titles": filters["titles"],
-            "workplace_types": filters["workplace_types"],
-            "geo": filters["geo"],
+        "source": {
+            "type": "query",
+            "query": {
+                "titles": filters["titles"],
+                "workplace_types": filters["workplace_types"],
+                "geo": filters["geo"],
+            },
         },
         "rows": rows,
     }
@@ -273,3 +297,61 @@ def discover() -> None:
     # report the whole projected leads store, tagging rows first seen on this pass.
     _print_discovery_summary(leads, mark_new_from=leads["fetched_at"])
     print(f"wrote to {short_path(store_path(DataKind.DISCOVERY))}")
+
+
+def _extract_posting_id(target: str) -> str:
+    """Posting id from a bare id or a LinkedIn jobs URL."""
+    if target.isdigit():
+        return target
+    for pattern in (r"/jobs/view/(?:[a-z-]*-)?(\d+)", r"currentJobId=(\d+)"):
+        if match := re.search(pattern, target):
+            return match.group(1)
+    raise ShobrError(f"could not extract a posting id from {target!r}")
+
+
+def discover_posting_id(target: str) -> None:
+    """Fetch one posting by id or URL and record it as a manual lead + enrichment."""
+    from .enrichment import build_enrichment_event, print_enriched_row, project_enrichment
+
+    posting_id = _extract_posting_id(target)
+    if event_log(DataKind.DISCOVERY).exists():
+        known = {row["posting_id"] for row in project_discovery()["rows"]}
+        if posting_id in known:
+            raise ShobrError(
+                f"posting {posting_id} is already a known lead; "
+                f"fetch its detail with `shobr enrich {posting_id}`"
+            )
+    nav_url = f"{LINKEDIN_BASE_URL}/jobs/view/{posting_id}"
+    detail = cast("JobDetail", beachmsg_json("job-detail", nav_url))
+    title, company, location = (
+        detail.get("title"),
+        detail.get("company"),
+        detail.get("location"),
+    )
+    if not title or not company or not location or company == title:
+        raise ShobrError(
+            f"parsed no discovery-stage fields for posting {posting_id}; "
+            "the LinkedIn job detail page structure may have changed, "
+            "refusing to record an incomplete lead"
+        )
+    lead: JobRow = {
+        "posting_id": posting_id,
+        "posting_url": f"https://www.linkedin.com/jobs/view/{posting_id}",
+        "title": title,
+        "company": company,
+        "location": location,
+    }
+    fetched_at = datetime.now(UTC)
+    discovery_event: _DiscoverEvent = {
+        "fetched_at": fetched_at.isoformat(timespec="seconds"),
+        "source": {"type": "manual"},
+        "rows": [lead],
+    }
+    enrichment_event = build_enrichment_event(lead, detail, fetched_at)
+    persist_event(DataKind.DISCOVERY, discovery_event, project_discovery)
+    enriched = persist_event(DataKind.ENRICHMENT, enrichment_event, project_enrichment)
+
+    print_enriched_row(enriched["rows"][posting_id])
+    print()
+    print(f"wrote to {short_path(store_path(DataKind.DISCOVERY))}")
+    print(f"wrote to {short_path(store_path(DataKind.ENRICHMENT))}")
