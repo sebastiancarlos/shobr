@@ -6,8 +6,13 @@ export default async ({ context }, url) => {
   const page = await context.newPage();
   await page.goto(url, { timeout: 60_000 });
 
-  // wait for page readiness by waiting for "job details" id to appear
-  await page.waitForSelector('[id^="JobDetails_AboutTheJob_"]', { timeout: 10_000 });
+  // Wait for the detail section to render.
+  try {
+    await page.waitForSelector('[id^="JobDetails_AboutTheJob_"]', { timeout: 10_000 });
+  } catch {}
+
+  // Capture the rendered DOM before mutating it
+  const raw_html = await page.content();
 
   const extract = () =>
     page.evaluate(() => {
@@ -182,7 +187,7 @@ export default async ({ context }, url) => {
       };
     });
 
-  const detail = await extract();
+  const detail = { ...(await extract()), raw_html };
 
   return JSON.stringify(detail, null, 2);
 };

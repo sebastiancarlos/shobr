@@ -6,6 +6,8 @@ export default async ({ context }, url, waitMs) => {
   // Give client-side rendering a moment to settle.
   await page.waitForTimeout(parseInt(waitMs || "2500", 10));
 
+  const raw_html = await page.content();
+
   const rows = await page.evaluate(() => {
     const ROW_MIN_TEXT_LENGTH = 10;
     const buttons = Array.from(document.querySelectorAll('button[aria-label="More options"]'));
@@ -46,5 +48,5 @@ export default async ({ context }, url, waitMs) => {
     return rows;
   });
 
-  return JSON.stringify({ rows }, null, 2);
+  return JSON.stringify({ rows, raw_html }, null, 2);
 };

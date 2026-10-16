@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, TypedDict, cast
 from urllib.parse import urlencode
 
-from .browser import beachmsg_json
+from .browser import beachmsg_json, capture_parse_failure
 from .color import BOLD, GREEN, RED, RESET
 from .config import Config, load_config, resolve_geo_ids
 from .core import (
@@ -30,7 +30,7 @@ from .core import (
 )
 
 if TYPE_CHECKING:
-    from .enrichment import JobDetail
+    from .enrichment import JobDetailPayload
 
 
 class JobRow(TypedDict):
@@ -273,6 +273,7 @@ def discover() -> None:
     raw = beachmsg_json("job-search", url)
     rows: list[JobRow] = raw["rows"]
     if not rows:
+        capture_parse_failure("job-search", url, raw)
         raise ShobrError(
             f"parsed 0 jobs from {url}; the LinkedIn jobs search page structure "
             "may have changed, refusing to write an empty leads store"
@@ -322,13 +323,14 @@ def discover_posting_id(target: str) -> None:
                 f"fetch its detail with `shobr enrich {posting_id}`"
             )
     nav_url = f"{LINKEDIN_BASE_URL}/jobs/view/{posting_id}"
-    detail = cast("JobDetail", beachmsg_json("job-detail", nav_url))
+    detail = cast("JobDetailPayload", beachmsg_json("job-detail", nav_url))
     title, company, location = (
         detail.get("title"),
         detail.get("company"),
         detail.get("location"),
     )
     if not title or not company or not location or company == title:
+        capture_parse_failure("job-detail", nav_url, detail, posting_id=posting_id)
         raise ShobrError(
             f"parsed no discovery-stage fields for posting {posting_id}; "
             "the LinkedIn job detail page structure may have changed, "

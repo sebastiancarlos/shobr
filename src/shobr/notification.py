@@ -9,7 +9,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict, cast
 
-from .browser import beachmsg_json
+from .browser import beachmsg_json, capture_parse_failure
 from .color import GREEN, RESET
 from .core import (
     LINKEDIN_BASE_URL,
@@ -191,6 +191,7 @@ def notifications() -> None:
     raw = beachmsg_json("notifications", url)
     rows: list[NotificationRow] = raw["rows"]
     if not rows:
+        capture_parse_failure("notifications", url, raw)
         raise ShobrError(
             f"parsed 0 notifications from {url}; the LinkedIn notifications "
             "page structure may have changed, refusing to write an empty queue"

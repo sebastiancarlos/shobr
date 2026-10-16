@@ -56,6 +56,41 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
+def _debug_bundles(data_home: TestDataHome, kind: str) -> list[Path]:
+    """Debug bundle dirs written for `kind` under $XDG_DATA_HOME/shobr/debug."""
+    debug_dir = data_home.shobr_data / "debug"
+    if not debug_dir.exists():
+        return []
+    return sorted(path for path in debug_dir.iterdir() if path.name.startswith(f"{kind}-"))
+
+
+def _assert_debug_bundle(
+    case: unittest.TestCase,
+    data_home: TestDataHome,
+    kind: str,
+    *,
+    marker: str,
+) -> Path:
+    """Assert exactly one complete debug bundle for `kind`, and return it.
+
+    `marker` must appear in the captured raw HTML, proving `page.html` holds
+    the rendered DOM rather than an empty placeholder.
+    """
+    bundles = _debug_bundles(data_home, kind)
+    case.assertEqual(len(bundles), 1, f"expected one {kind} bundle, got {bundles}")
+    bundle = bundles[0]
+    for name in ("page.html", "meta.json"):
+        case.assertTrue((bundle / name).exists(), f"{name} missing in {bundle}")
+    case.assertFalse((bundle / "payload.json").exists(), "bundle must not carry parsed fields")
+    html = (bundle / "page.html").read_text(encoding="utf-8")
+    case.assertIn(marker, html)
+    case.assertNotIn("<script", html.lower())
+    case.assertNotIn("<style", html.lower())
+    meta = json.loads((bundle / "meta.json").read_text(encoding="utf-8"))
+    case.assertEqual(set(meta), {"url", "shobr_version", "browser"})
+    return bundle
+
+
 def _cross_second_boundary() -> None:
     """Sleep past the wall-clock second rollover.
 
@@ -1931,8 +1966,16 @@ class TestCLI(unittest.TestCase):
 
     def test_discover_fails_loudly_on_empty(self) -> None:
         """A search page that renders zero job cards must fail loudly (likely
-        a LinkedIn DOM change) instead of writing an empty store."""
-        html = "<html><body><main>no job cards here</main></body></html>"
+        a LinkedIn DOM change) instead of writing an empty store. The debug
+        bundle keeps the markup and drops scripts, styles, and head extras."""
+        html = (
+            "<html><head><title>Empty search</title>"
+            "<style>.a{color:red}</style>"
+            '<meta name="key" content="dropme">'
+            "<script>window.boom = 1;</script></head>"
+            "<body><!-- hydration marker --><main>no job cards here</main>"
+            "<script>console.log('nested')</script></body></html>"
+        )
         profile = f"test-{os.getpid()}-shobr-jobs-empty"
         with TestDataHome() as data_home:
             env = data_home.env
@@ -1952,6 +1995,16 @@ class TestCLI(unittest.TestCase):
                     discovery_dir = data_home.shobr_data / "discovery"
                     self.assertFalse((discovery_dir / "events.jsonl").exists())
                     self.assertFalse((discovery_dir / "discovery.json").exists())
+                    bundle = _assert_debug_bundle(
+                        self, data_home, "job-search", marker="no job cards here"
+                    )
+                    self.assertIn(str(bundle), result.stderr)
+                    page_html = (bundle / "page.html").read_text(encoding="utf-8")
+                    self.assertIn("<title>Empty search</title>", page_html)
+                    self.assertNotIn("dropme", page_html)
+                    self.assertNotIn("hydration marker", page_html)
+                    # folder stamp is UTC with no zone suffix
+                    self.assertRegex(bundle.name, r"^job-search-page-\d{8}T\d{6}$")
 
     def test_discover_waits_for_slow_render(self) -> None:
         """A search page that hydrates after load is captured once the browser
@@ -2015,6 +2068,7 @@ class TestCLI(unittest.TestCase):
             )["rows"]
             self.assertTrue(enriched_rows["5550000009"]["actionable"])
             self.assertEqual(enriched_rows["5550000009"]["apply_method"], "external")
+            self.assertNotIn("raw_html", enriched_rows["5550000009"])
 
             events = [
                 json.loads(line)
@@ -2023,6 +2077,16 @@ class TestCLI(unittest.TestCase):
                 .splitlines()
             ]
             self.assertEqual(events[0]["source"], {"type": "manual"})
+
+            enriched_events = [
+                json.loads(line)
+                for line in (data_home.shobr_data / "enrichment" / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            # raw_html rides along for debug bundles, but is never persisted.
+            self.assertNotIn("raw_html", events[0])
+            self.assertNotIn("raw_html", enriched_events[0])
 
     def test_discover_posting_id_accepts_url_and_marks_closed(self) -> None:
         """'shobr discover <url>' canonicalizes the URL; closed postings land rejected."""
@@ -2104,6 +2168,11 @@ class TestCLI(unittest.TestCase):
                     self.assertFalse((discovery_dir / "events.jsonl").exists())
                     self.assertFalse((discovery_dir / "discovery.json").exists())
                     self.assertFalse((data_home.shobr_data / "enrichment").exists())
+                    bundle = _assert_debug_bundle(
+                        self, data_home, "job-detail", marker="About the job"
+                    )
+                    self.assertIn("5550000001", bundle.name)
+                    self.assertIn(str(bundle), result.stderr)
 
     def test_discovered_with_no_data(self) -> None:
         """discovered on a fresh data home fails offline, writes nothing."""
@@ -2746,6 +2815,11 @@ class TestCLI(unittest.TestCase):
                     enrichment_dir = data_home.shobr_data / "enrichment"
                     self.assertFalse((enrichment_dir / "events.jsonl").exists())
                     self.assertFalse((enrichment_dir / "enrichment.json").exists())
+                    bundle = _assert_debug_bundle(
+                        self, data_home, "job-detail", marker="About the job"
+                    )
+                    self.assertIn("5550000001", bundle.name)
+                    self.assertIn(str(bundle), result.stderr)
 
     def test_enrich_refuses_open_posting_without_apply_info(self) -> None:
         """'shobr enrich' on an open-looking page with no apply control fails
@@ -2779,6 +2853,11 @@ class TestCLI(unittest.TestCase):
                     enrichment_dir = data_home.shobr_data / "enrichment"
                     self.assertFalse((enrichment_dir / "events.jsonl").exists())
                     self.assertFalse((enrichment_dir / "enrichment.json").exists())
+                    bundle = _assert_debug_bundle(
+                        self, data_home, "job-detail", marker="About the job"
+                    )
+                    self.assertIn("5550000008", bundle.name)
+                    self.assertIn(str(bundle), result.stderr)
 
     def test_enrich_posting_id_closed_posting(self) -> None:
         """'shobr enrich <posting_id>' on a closed posting."""
