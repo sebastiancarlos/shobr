@@ -8,6 +8,8 @@ export default async ({ context }, url, waitMs) => {
 
   await page.waitForTimeout(parseInt(waitMs || "4000", 10));
 
+  const raw_html = await page.content();
+
   const rows = await page.evaluate(() => {
     const PREFIX = "job-card-component-ref-";
     const seen = new Set();
@@ -45,5 +47,5 @@ export default async ({ context }, url, waitMs) => {
     return rows;
   });
 
-  return JSON.stringify({ rows }, null, 2);
+  return JSON.stringify({ rows, raw_html }, null, 2);
 };

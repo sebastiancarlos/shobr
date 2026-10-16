@@ -7,7 +7,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import TypedDict, cast
 
-from .browser import beachmsg_json
+from .browser import beachmsg_json, capture_parse_failure
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
 from .config import Config, load_config
 from .core import (
@@ -53,6 +53,12 @@ class JobDetail(TypedDict):
     title: str | None
     company: str | None
     location: str | None
+
+
+class JobDetailPayload(JobDetail):
+    """The `job-detail` command output: parsed detail plus the raw page HTML."""
+
+    raw_html: str
 
 
 class EnrichmentEvent(JobRow, JobDetail):
@@ -325,24 +331,33 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
 
 
 def build_enrichment_event(
-    target: JobRow, detail: JobDetail, fetched_at: datetime
+    target: JobRow, detail: JobDetailPayload, fetched_at: datetime
 ) -> EnrichmentEvent:
-    """Validate a fetched detail and build its event (no writes)."""
+    """Validate a fetched detail and build its event."""
     job_description = _html_to_markdown(detail["job_description_html"])
     company_description = _html_to_markdown(detail["company_description_html"])
-    if job_description is None or not job_description.strip():
-        raise ShobrError(
-            f"parsed no description for posting {target['posting_id']}; "
-            "the LinkedIn job detail page structure may have changed, "
-            "refusing to record an empty enrichment"
-        )
-    if detail["accepting_applications"] and not detail["apply_method"] and not detail["apply_url"]:
-        raise ShobrError(
-            f"parsed no apply info for posting {target['posting_id']} while it still "
-            "appears open; the LinkedIn job detail page structure may have changed "
-            "(or the posting closed with an unrecognized notice), "
-            "refusing to record an incomplete enrichment"
-        )
+    try:
+        if job_description is None or not job_description.strip():
+            raise ShobrError(
+                f"parsed no description for posting {target['posting_id']}; "
+                "the LinkedIn job detail page structure may have changed, "
+                "refusing to record an empty enrichment"
+            )
+        if (
+            detail["accepting_applications"]
+            and not detail["apply_method"]
+            and not detail["apply_url"]
+        ):
+            raise ShobrError(
+                f"parsed no apply info for posting {target['posting_id']} while it still "
+                "appears open; the LinkedIn job detail page structure may have changed "
+                "(or the posting closed with an unrecognized notice), "
+                "refusing to record an incomplete enrichment"
+            )
+    except ShobrError:
+        url = f"{LINKEDIN_BASE_URL}/jobs/view/{target['posting_id']}"
+        capture_parse_failure("job-detail", url, detail, posting_id=target["posting_id"])
+        raise
     if company_description is None:
         company_description = ""
     return {
@@ -368,9 +383,8 @@ def build_enrichment_event(
 def _enrich_one(target: StoredJob) -> None:
     """Fetch and persist the detail for a single known lead."""
     nav_url = f"{LINKEDIN_BASE_URL}/jobs/view/{target['posting_id']}"
-    raw = beachmsg_json("job-detail", nav_url)
-    detail = cast(JobDetail, raw)
-    row = build_enrichment_event(target, detail, datetime.now(UTC))
+    payload = cast(JobDetailPayload, beachmsg_json("job-detail", nav_url))
+    row = build_enrichment_event(target, payload, datetime.now(UTC))
     enriched = persist_event(DataKind.ENRICHMENT, row, project_enrichment)
 
     print_enriched_row(enriched["rows"][target["posting_id"]])
