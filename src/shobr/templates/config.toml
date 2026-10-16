@@ -10,7 +10,7 @@ cv_toolchain_dir = "~/shobr-resumes"
 # The user MUST configure this.
 # beachpatrol_profile = "job-hunter"
 
-# beachpatrol browser to use.
+# beachpatrol browser to use: "chromium" or "firefox".
 beachpatrol_browser = "chromium"
 
 # Job titles fed to LinkedIn search as an ORed keyword query.

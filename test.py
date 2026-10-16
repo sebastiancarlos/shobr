@@ -32,6 +32,10 @@ _KEEP_OUTPUTS = "--keep-outputs" in sys.argv or os.environ.get("SHOBR_KEEP_OUTPU
 ROOT = Path(__file__).resolve().parent
 FIXTURES_DIR = ROOT / "test-fixtures"
 
+# The browser the suite drives. CI runs a Firefox leg via SHOBR_TEST_BROWSER;
+# locally it stays chromium.
+TEST_BROWSER = os.environ.get("SHOBR_TEST_BROWSER", "chromium")
+
 
 def _read_fixture(name: str) -> str:
     return (FIXTURES_DIR / name).read_text(encoding="utf-8")
@@ -185,6 +189,7 @@ class TestDataHome:
             "XDG_DATA_HOME": str(self.path),
             "XDG_CONFIG_HOME": str(self.path / "config"),
             "SHOBR_BROWSER_WAIT_MS": "0",
+            "SHOBR_BEACHPATROL_BROWSER": TEST_BROWSER,
         }
         return self
 
@@ -837,7 +842,7 @@ class TestBeachpatrolInstance:
     def __enter__(self) -> TestBeachpatrolInstance:
         """Launch beachpatrol, waiting for readiness."""
         self._proc = subprocess.Popen(
-            ["beachpatrol", "--headless", "--browser", "chromium", "--profile", self._profile],
+            ["beachpatrol", "--headless", "--browser", TEST_BROWSER, "--profile", self._profile],
             env=self._env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -871,7 +876,7 @@ class TestBeachpatrolInstance:
             self._proc.kill()
             self._proc.wait(timeout=10)
         shutil.rmtree(
-            Path.home() / ".config" / "beachpatrol" / "profiles" / "chromium" / self._profile,
+            Path.home() / ".config" / "beachpatrol" / "profiles" / TEST_BROWSER / self._profile,
             ignore_errors=True,
         )
         if self._proc.stdout is not None:
@@ -999,6 +1004,8 @@ class TestCLI(unittest.TestCase):
                 "SHOBR_BEACHPATROL_PROFILE": "test-profile",
                 "PATH": f"{stub}:{data_home.env['PATH']}",
             }
+            # This case is about config resolution, so drop the test-wide override.
+            env.pop("SHOBR_BEACHPATROL_BROWSER", None)
             result = shobr("smoke-test-browser", env=env)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("--browser firefox", log.read_text())
@@ -1077,7 +1084,7 @@ class TestCLI(unittest.TestCase):
                     self.assertIn("Welcome home", html_path.read_text())
 
                     list_tabs = subprocess.run(
-                        ["beachmsg", "--browser", "chromium", "--profile", profile, "list-tabs"],
+                        ["beachmsg", "--browser", TEST_BROWSER, "--profile", profile, "list-tabs"],
                         capture_output=True,
                         text=True,
                         env=env,
