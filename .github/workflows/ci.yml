@@ -1,4 +1,7 @@
-name: Test (Linux, macOS)
+name: Test (Linux, macOS) x (Chromium, Firefox)
+
+permissions:
+  contents: read
 
 on:
   push:
@@ -11,7 +14,7 @@ on:
 
 jobs:
   test:
-    name: Test ${{ matrix.os }}
+    name: Test ${{ matrix.os }}/${{ matrix.browser }}
     runs-on: ${{ matrix.os }}
     env:
       # Make uv use its managed Python (cacheable)
@@ -21,6 +24,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        browser: [chromium, firefox]
 
     steps:
       - name: Checkout shobr
@@ -52,13 +56,13 @@ jobs:
           path: |
             ~/.cache/ms-playwright
             ~/Library/Caches/ms-playwright
-          key: playwright-${{ matrix.os }}-chromium-${{ hashFiles('beachpatrol/package-lock.json') }}
+          key: playwright-${{ matrix.os }}-${{ matrix.browser }}-${{ hashFiles('beachpatrol/package-lock.json') }}
 
       - name: Install beachpatrol
         working-directory: beachpatrol
         run: |
           npm ci
-          npx playwright install --with-deps --no-shell chromium
+          npx playwright install --with-deps --no-shell ${{ matrix.browser }}
           make install prefix="$HOME/.local"
 
       - name: Add beachpatrol to PATH
@@ -93,3 +97,5 @@ jobs:
 
       - name: Run E2E suite
         run: uv run python test.py --workers 2
+        env:
+          SHOBR_TEST_BROWSER: ${{ matrix.browser }}

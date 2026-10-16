@@ -278,7 +278,11 @@ beachpatrol_profile = "job-hunter"
 beachpatrol_browser = "chromium"
 ```
 
-`beachpatrol` browser to drive.
+`beachpatrol` browser to drive. 
+
+Note: _`chromium` is recommended._ `firefox` works too, but its stealth plugin
+is weaker, so LinkedIn can cause errors more more often. See beachpatrol's
+[Known Issues](https://github.com/sebastiancarlos/beachpatrol#known-issues).
 
 #### `titles` (required, list of strings)
 
