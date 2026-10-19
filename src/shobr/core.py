@@ -155,7 +155,16 @@ _STAGE_RANK = {
 }
 
 
-def stage_line(posting_id: str, after: DataKind) -> str:
+def store_key(provider: str, posting_id: str) -> str:
+    """Returns the key for a store which uniquely identifies a value from its
+    provider and its posting id.
+
+    The format is "{provider}/{posting_id}".
+    """
+    return f"{provider}/{posting_id}"
+
+
+def stage_line(provider: str, posting_id: str, after: DataKind) -> str:
     """Produce a `- Stage: ...` line for CLI output, naming the furthest stage
     reached, and some information about it.
 
@@ -171,18 +180,19 @@ def stage_line(posting_id: str, after: DataKind) -> str:
     from .tailoring import project_tailoring
     from .tracking import project_tracking
 
+    key = store_key(provider, posting_id)
     stage = after
     detail = ""
-    if posting_id in project_enrichment()["rows"]:
+    if key in project_enrichment()["rows"]:
         stage, detail = DataKind.ENRICHMENT, ""
-    row = project_screening()["rows"].get(posting_id)
+    row = project_screening()["rows"].get(key)
     if row is not None:
         stage = DataKind.SCREENING
         if after is not DataKind.SCREENING:
             detail = f" ({str(row['decision']).upper()})"
-    if posting_id in project_tailoring()["rows"]:
+    if key in project_tailoring()["rows"]:
         stage, detail = DataKind.TAILORING, ""
-    row = project_tracking()["rows"].get(posting_id)
+    row = project_tracking()["rows"].get(key)
     if row is not None:
         stage = DataKind.TRACKING
         if after is not DataKind.TRACKING:
@@ -193,15 +203,17 @@ def stage_line(posting_id: str, after: DataKind) -> str:
 
 
 def applications_by_company(companies: dict[str, str]) -> dict[str, dict[str, str]]:
-    """For all passed companies, return posting_id and first_tracked_time for non-withdrawn rows.
+    """For all passed companies, return the first_tracked_time of non-withdrawn
+    rows, keyed by store key.
 
-    Callers pass a {pid: company} map, so this never touches the enrichment
-    store (which would recurse from inside the projections that call it).
-    Withdrawn pids are not considered.
+    Callers pass a {store_key: company} map, so this never touches the
+    enrichment store (which would recurse from inside the projections that call
+    it). Every board's tracking is considered, so a same-company application is
+    found across providers. Withdrawn pids are not considered.
     """
     from .tracking import TrackStatus, project_tracking
 
-    # {company: {posting_id: first_tracked_at}}
+    # {company: {store_key: first_tracked_at}}
     apps_by_company: dict[str, dict[str, str]] = {}
 
     for pid, row in project_tracking()["rows"].items():
@@ -215,7 +227,7 @@ def applications_by_company(companies: dict[str, str]) -> dict[str, dict[str, st
 
 def cooldown_rejection_reason(
     apps_by_company: dict[str, dict[str, str]],
-    posting_id: str,
+    key: str,
     company: str,
     last_seen: str,
     days: int,
@@ -226,7 +238,7 @@ def cooldown_rejection_reason(
     compared to any same-company application's time.
     """
     apps = apps_by_company.get(company, {})
-    if days <= 0 or posting_id in apps:
+    if days <= 0 or key in apps:
         return None
     seen = datetime.fromisoformat(last_seen).date()
     for at in apps.values():
@@ -235,27 +247,31 @@ def cooldown_rejection_reason(
     return None
 
 
-def same_company_line(company: str, posting_id: str, *, plain: bool = False) -> str | None:
+def same_company_line(
+    company: str, provider: str, posting_id: str, *, plain: bool = False
+) -> str | None:
     """Generate 'Last Applied To Same Company' line for another posting's row.
 
-    Latest date in which a non-withdrawn lead was first tracked for `company`,
-    excluding `posting_id` itself. With `plain`, markdown without ANSI (for the
-    $EDITOR template).
+    Latest date in which a non-withdrawn lead was first tracked for `company`
+    on any board, excluding the `(provider, posting_id)` itself. With `plain`,
+    markdown without ANSI (for the $EDITOR template).
     """
     if not event_log(DataKind.ENRICHMENT).exists():
         return None
     from .enrichment import project_enrichment
 
-    companies = {pid: row["company"] for pid, row in project_enrichment()["rows"].items()}
+    companies = {key: row["company"] for key, row in project_enrichment()["rows"].items()}
     apps = applications_by_company(companies).get(company, {})
-    candidates = [(at, pid) for pid, at in apps.items() if pid != posting_id]
+    own = store_key(provider, posting_id)
+    candidates = [(at, key) for key, at in apps.items() if key != own]
     if not candidates:
         return None
-    at, pid = max(candidates)
+    at, key = max(candidates)
+    other_id = key.partition("/")[2]
     date = datetime.fromisoformat(at).date().isoformat()
     if plain:
-        return f"- Last Applied To Same Company: {date} ({pid})"
-    return f"  - {YELLOW}Last Applied To Same Company:{RESET} {date} ({pid})"
+        return f"- Last Applied To Same Company: {date} ({other_id})"
+    return f"  - {YELLOW}Last Applied To Same Company:{RESET} {date} ({other_id})"
 
 
 def rejected_tag(reason: str) -> str:
@@ -290,13 +306,16 @@ def _row_at_stage(posting_id: str, stage: Gate) -> tuple[EnrichedRow | None, str
     Never prints; callers decide what to do with the reason.
     """
     from .enrichment import project_enrichment
+    from .providers.base import current_provider
 
     try:
         require_events(DataKind.ENRICHMENT)
     except ShobrError as exc:
         return None, str(exc)
-    rows = project_enrichment()["rows"]
-    row = rows.get(posting_id)
+    provider = current_provider().name
+    key = store_key(provider, posting_id)
+    rows = project_enrichment(provider)["rows"]
+    row = rows.get(key)
     if row is None:
         return None, f"posting {posting_id} not found in enrichment store"
     if not row["actionable"]:
@@ -307,13 +326,13 @@ def _row_at_stage(posting_id: str, stage: Gate) -> tuple[EnrichedRow | None, str
 
         if not event_log(DataKind.SCREENING).exists():
             return None, f"posting {posting_id} is not marked pursue"
-        sr = project_screening()["rows"].get(posting_id)
+        sr = project_screening(provider)["rows"].get(key)
         if sr is None or sr["decision"] != ReviewDecision.PURSUE:
             return None, f"posting {posting_id} is not marked pursue"
     if stage == "tailorable":
         from .tailoring import project_tailoring
 
-        if event_log(DataKind.TAILORING).exists() and posting_id in project_tailoring()["rows"]:
+        if event_log(DataKind.TAILORING).exists() and key in project_tailoring(provider)["rows"]:
             return None, f"posting {posting_id} already has a package"
     return row, None
 

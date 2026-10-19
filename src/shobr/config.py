@@ -5,7 +5,7 @@ import os
 import re
 import tomllib
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from .core import (
     SHOBR_CONFIG_DIR,
@@ -26,7 +26,7 @@ class Config(TypedDict):
     workplace_types: list[str]
     geo: list[str]
     geo_ids: dict[str, str]
-    reject_title: list[tuple[str, re.Pattern[str]]]
+    reject_title: dict[str, re.Pattern[str]]
     presence_locations: list[str]
     reject_employment_type: list[str]
     cv_toolchain_dir: str
@@ -34,9 +34,11 @@ class Config(TypedDict):
     beachpatrol_browser: str
     stale_after_days: int
     reject_recent_application_days: int
+    providers: dict[str, dict[str, object]]
 
 
 _KNOWN_CONFIG_KEYS = frozenset(Config.__annotations__)
+_OVERRIDABLE_KEYS = _KNOWN_CONFIG_KEYS - {"providers"}
 
 
 def _str_list(data: dict, key: str, *, required: bool = False) -> list[str]:
@@ -73,17 +75,20 @@ def _nonneg_int(data: dict, key: str, default: int) -> int:
 
 
 @functools.lru_cache(maxsize=1)
-def load_config() -> Config:
-    """Read and validate config.toml, raising on any problem."""
+def _raw_config() -> dict:
+    """Read config.toml verbatim, raising on a missing or invalid file."""
     if not CONFIG_PATH.is_file():
         raise ShobrError(
             f"profile file missing: {short_path(CONFIG_PATH)} (run `shobr setup` to scaffold it)"
         )
     try:
-        data = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
         raise ShobrError(f"config.toml: invalid TOML: {exc}") from exc
 
+
+def _parse_config(data: dict) -> Config:
+    """Validate one raw config table, raising on any problem."""
     unknown_keys = sorted(key for key in data if key not in _KNOWN_CONFIG_KEYS)
     if unknown_keys:
         raise ShobrError(
@@ -122,14 +127,14 @@ def load_config() -> Config:
     raw_rejects = data.get("reject_title", {})
     if not isinstance(raw_rejects, dict):
         raise ShobrError("config.toml: 'reject_title' must be a table")
-    reject_title: list[tuple[str, re.Pattern[str]]] = []
+    reject_title: dict[str, re.Pattern[str]] = {}
     for label, pattern in raw_rejects.items():
         if not label:
             raise ShobrError("config.toml: 'reject_title' labels must be non-empty")
         if not isinstance(pattern, str) or not pattern:
             raise ShobrError(f"config.toml: title {label!r} needs a non-empty pattern")
         try:
-            reject_title.append((label, re.compile(pattern)))
+            reject_title[label] = re.compile(pattern)
         except re.error as exc:
             raise ShobrError(f"config.toml: bad regex for title {label!r}: {exc}") from exc
 
@@ -154,6 +159,25 @@ def load_config() -> Config:
     if not isinstance(raw_browser, str) or not raw_browser:
         raise ShobrError("config.toml: 'beachpatrol_browser' must be a non-empty string")
 
+    raw_providers = data.get("providers", {})
+    if not isinstance(raw_providers, dict):
+        raise ShobrError("config.toml: 'providers' must be a table")
+
+    # verify that configured providers are valid
+    from .providers.base import all_providers
+
+    known_providers = all_providers()
+    providers: dict[str, dict[str, object]] = {}
+    for provider_name, section in raw_providers.items():
+        if not isinstance(section, dict):
+            raise ShobrError(f"config.toml: [providers.{provider_name}] must be a table")
+        if provider_name not in known_providers:
+            raise ShobrError(
+                f"config.toml: unknown provider {provider_name!r} "
+                f"(known: {', '.join(sorted(known_providers))})."
+            )
+        providers[provider_name] = section
+
     return {
         "titles": titles,
         "workplace_types": workplace_types,
@@ -167,7 +191,34 @@ def load_config() -> Config:
         "beachpatrol_browser": raw_browser,
         "stale_after_days": raw_stale,
         "reject_recent_application_days": raw_cooldown,
+        "providers": providers,
     }
+
+
+@functools.lru_cache(maxsize=1)
+def load_config() -> Config:
+    """Read and validate config.toml, raising on any problem."""
+    return _parse_config(_raw_config())
+
+
+@functools.cache
+def load_provider_config(name: str) -> Config:
+    """The top-level config merged with `[providers.<name>]` overrides.
+
+    Only keys shobr knows at the top level are overridable.
+    """
+    raw = _raw_config()
+    section = raw.get("providers", {}).get(name, {})
+    if not isinstance(section, dict):
+        section = {}
+    overrides = {key: value for key, value in section.items() if key in _OVERRIDABLE_KEYS}
+    base = {key: value for key, value in raw.items() if key != "providers"}
+    return _parse_config({**base, **overrides})
+
+
+def provider_options(name: str) -> dict[str, object]:
+    """The raw `[providers.<name>]` section, provider-specific keys included."""
+    return cast(dict[str, object], load_config()["providers"].get(name, {}))
 
 
 def resolve_cv_toolchain_dir() -> Path:

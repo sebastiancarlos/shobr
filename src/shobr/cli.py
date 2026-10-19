@@ -11,6 +11,7 @@ from .discovery import discover, discover_local, discover_posting_id
 from .enrichment import enrich_next, enrich_posting_id, print_enriched
 from .notification import notifications, notifications_local
 from .pipeline import next_posting_id, print_status, run_next
+from .providers.base import DEFAULT_PROVIDER, all_providers, set_provider
 from .screening import (
     init_profile,
     print_profile,
@@ -54,6 +55,18 @@ def _force_arg(subparser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return subparser
 
 
+def _provider_arg(subparser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add a --provider flag (LinkedIn by default)."""
+    subparser.add_argument(
+        "--provider",
+        default=DEFAULT_PROVIDER,
+        choices=sorted(all_providers()),
+        metavar="NAME",
+        help=f"job board provider (default: {DEFAULT_PROVIDER})",
+    )
+    return subparser
+
+
 def main() -> None:
     """Parse argv, setup --help, and dispatch to the requested command.
 
@@ -85,38 +98,46 @@ def main() -> None:
         ("discovered", "print the stored job leads summary"),
         ("enriched", "print every enriched job detail stored so far"),
     ]:
-        sub.add_parser(name, help=help_text)
+        _provider_arg(sub.add_parser(name, help=help_text))
 
-    sub.add_parser(
+    discover_parser = sub.add_parser(
         "discover",
-        help="parse the LinkedIn jobs search-results page into structured rows",
-    ).add_argument(
+        help="parse the job-board search-results page into structured rows",
+    )
+    discover_parser.add_argument(
         "posting_id",
         nargs="?",
         help="posting id or URL to add directly as a manual lead",
     )
+    _provider_arg(discover_parser)
 
-    sub.add_parser(
+    enrich_parser = sub.add_parser(
         "enrich",
         help="fetch the detail of a specific posting id",
-    ).add_argument("posting_id", help="LinkedIn posting id to enrich first")
-    sub.add_parser(
-        "enrich-next",
-        help="fetch the detail of the oldest pre-filtered lead that is not yet enriched",
     )
-    sub.add_parser(
+    enrich_parser.add_argument("posting_id", help="posting id to enrich first")
+    _provider_arg(enrich_parser)
+    _provider_arg(
+        sub.add_parser(
+            "enrich-next",
+            help="fetch the detail of the oldest pre-filtered lead that is not yet enriched",
+        )
+    )
+    screened_parser = sub.add_parser(
         "screened",
         help="print the screening store with review provenance",
-    ).add_argument(
+    )
+    screened_parser.add_argument(
         "--score",
         help="filter by score: N, N-M, N,M,K, or 'none' (no human review yet)",
     )
+    _provider_arg(screened_parser)
 
     screen = sub.add_parser(
         "screen",
         help="record a human screening verdict for a posting id",
     )
-    screen.add_argument("posting_id", help="LinkedIn posting id to screen")
+    screen.add_argument("posting_id", help="posting id to screen")
     screen.add_argument(
         "score",
         nargs="?",
@@ -124,7 +145,7 @@ def main() -> None:
         help="fit score 1-5; omit to review in $EDITOR",
     )
     screen.add_argument("--reason", help="free-text reasoning; must accompany a score")
-    _force_arg(screen)
+    _provider_arg(_force_arg(screen))
 
     screen_next_parser = sub.add_parser(
         "screen-next",
@@ -139,85 +160,93 @@ def main() -> None:
         "--reason",
         help="free-text reasoning; must accompany --score",
     )
-    _force_arg(screen_next_parser)
+    _provider_arg(_force_arg(screen_next_parser))
 
     screen_llm = sub.add_parser(
         "screen-llm",
         help="print the LLM scoring prompt for a posting id",
     )
-    screen_llm.add_argument("posting_id", help="LinkedIn posting id to score")
-    _force_arg(_print_prompt_arg(screen_llm))
+    screen_llm.add_argument("posting_id", help="posting id to score")
+    _provider_arg(_force_arg(_print_prompt_arg(screen_llm)))
 
     screen_llm_next_parser = sub.add_parser(
         "screen-llm-next",
         help="print the LLM scoring prompt for the oldest unscored lead",
     )
-    _force_arg(_print_prompt_arg(screen_llm_next_parser))
+    _provider_arg(_force_arg(_print_prompt_arg(screen_llm_next_parser)))
 
     screen_llm_all_parser = sub.add_parser(
         "screen-llm-all", help="score every unscored lead through the LLM"
     )
-    _force_arg(screen_llm_all_parser)
-    sub.add_parser("tailored", help="print every tailored package stored so far")
+    _provider_arg(_force_arg(screen_llm_all_parser))
+    _provider_arg(sub.add_parser("tailored", help="print every tailored package stored so far"))
 
     tailor = sub.add_parser(
         "tailor",
         help="build the application package for a posting id",
     )
-    tailor.add_argument("posting_id", help="LinkedIn posting id to tailor for")
-    _force_arg(_print_prompt_arg(tailor, plural=True))
+    tailor.add_argument("posting_id", help="posting id to tailor for")
+    _provider_arg(_force_arg(_print_prompt_arg(tailor, plural=True)))
 
     tailor_next_parser = sub.add_parser(
         "tailor-next",
         help="build the package for the oldest pursue row with no package yet",
     )
-    _force_arg(_print_prompt_arg(tailor_next_parser, plural=True))
+    _provider_arg(_force_arg(_print_prompt_arg(tailor_next_parser, plural=True)))
 
     tailor_all_parser = sub.add_parser(
         "tailor-all", help="build packages for every pursue row with no package yet"
     )
-    _force_arg(tailor_all_parser)
+    _provider_arg(_force_arg(tailor_all_parser))
 
-    sub.add_parser(
-        "tracked",
-        help="print the tracking store with per-status breakdown",
+    _provider_arg(
+        sub.add_parser(
+            "tracked",
+            help="print the tracking store with per-status breakdown",
+        )
     )
 
     track = sub.add_parser(
         "track",
-        help="record a submission pipeline status for a packaged posting",
+        help="record a submission pipeline status for a posting",
     )
-    track.add_argument("posting_id", help="LinkedIn posting id to track")
+    track.add_argument("posting_id", help="posting id to track")
     track.add_argument(
         "status",
         choices=[status.value for status in TrackStatus],
         help="new pipeline status",
     )
     track.add_argument("--note", help="free-text note recorded with the transition")
+    _provider_arg(track)
 
-    sub.add_parser(
+    review_parser = sub.add_parser(
         "review",
-        help="print the full package for a packaged posting",
-    ).add_argument("posting_id", help="LinkedIn posting id to review")
+        help="print the full listing for a posting",
+    )
+    review_parser.add_argument("posting_id", help="posting id to review")
+    _provider_arg(review_parser)
 
     for name, help_text in [
-        ("review-next", "print the full package for the oldest untracked posting"),
+        ("review-next", "print the oldest untracked posting"),
         ("status", "print the pipeline status overview"),
     ]:
-        sub.add_parser(name, help=help_text)
+        _provider_arg(sub.add_parser(name, help=help_text))
 
-    sub.add_parser(
+    next_parser = sub.add_parser(
         "next",
         help="prompt for the single next pipeline action and run it on confirmation",
-    ).add_argument(
+    )
+    next_parser.add_argument(
         "posting_id",
         nargs="?",
-        help="limit to the next action for one LinkedIn posting id",
+        help="limit to the next action for one posting id",
     )
+    _provider_arg(next_parser)
 
     args = parser.parse_args()
 
     try:
+        set_provider(getattr(args, "provider", DEFAULT_PROVIDER))
         _dispatch(args, parser)
     except ShobrError as exc:
         print(exc, file=sys.stderr)

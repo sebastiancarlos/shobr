@@ -1,12 +1,12 @@
 """Pipeline-wide overview, and single-step dispatcher."""
 
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
 from .config import load_config
-from .core import ShobrError
+from .core import ShobrError, store_key
 from .discovery import StoredJob, discover, project_discovery
 from .enrichment import (
     EnrichedRow,
@@ -16,6 +16,7 @@ from .enrichment import (
     is_stale,
     project_enrichment,
 )
+from .providers.base import current_provider
 from .screening import (
     SCORE_COLORS,
     ReviewDecision,
@@ -51,12 +52,20 @@ def _load_stores() -> tuple[
     dict[str, TrackedRow],
 ]:
     """Project every stage store."""
-    leads = project_discovery()["rows"]
-    enriched = list(project_enrichment()["rows"].values())
-    screened = project_screening()["rows"]
-    tailored = project_tailoring()["rows"]
-    tracked = project_tracking()["rows"]
+    provider = current_provider().name
+    leads = project_discovery(provider)["rows"]
+    enriched = list(project_enrichment(provider)["rows"].values())
+    screened = project_screening(provider)["rows"]
+    tailored = project_tailoring(provider)["rows"]
+    tracked = project_tracking(provider)["rows"]
     return leads, enriched, screened, tailored, tracked
+
+
+def _ids(
+    rows: Mapping[str, StoredJob | EnrichedRow | ScreeningRow | TailoringRow | TrackedRow],
+) -> set[str]:
+    """The plain posting ids of a projected store."""
+    return {row["posting_id"] for row in rows.values()}
 
 
 def _pending_enrichment(leads: list[StoredJob], enriched_ids: set[str]) -> int:
@@ -91,8 +100,10 @@ def _pending_tailoring(
     passing = {row["posting_id"] for row in enriched if row["actionable"]}
     return sum(
         1
-        for pid, sr in screened.items()
-        if sr["decision"] == ReviewDecision.PURSUE and pid not in tailored_ids and pid in passing
+        for sr in screened.values()
+        if sr["decision"] == ReviewDecision.PURSUE
+        and sr["posting_id"] not in tailored_ids
+        and sr["posting_id"] in passing
     )
 
 
@@ -109,16 +120,18 @@ def print_status() -> None:
     leads, enriched, screened, tailored, tracked = _load_stores()
 
     enriched_ids = {row["posting_id"] for row in enriched}
-    human_reviewed = {pid for pid, sr in screened.items() if sr["human"] is not None}
+    human_reviewed = {sr["posting_id"] for sr in screened.values() if sr["human"] is not None}
     passing = {row["posting_id"] for row in enriched if row["actionable"]}
+    tailored_ids = _ids(tailored)
+    tracked_ids = _ids(tracked)
 
     skip = sum(1 for sr in screened.values() if sr["decision"] == ReviewDecision.SKIP)
     pending_human = sum(
         1
-        for pid, sr in screened.items()
-        if sr["decision"] == ReviewDecision.PENDING and pid in passing
+        for sr in screened.values()
+        if sr["decision"] == ReviewDecision.PENDING and sr["posting_id"] in passing
     )
-    ai_reviewed = {pid for pid, sr in screened.items() if sr["ai"] is not None}
+    ai_reviewed = {sr["posting_id"] for sr in screened.values() if sr["ai"] is not None}
     lacking_llm = _pending_ai_screening(enriched, human_reviewed, ai_reviewed)
 
     scores_desc = tuple(sorted(Score, reverse=True))
@@ -136,12 +149,12 @@ def print_status() -> None:
         text = f"{score}: {human_scores[score]}"
         to_tailor = sum(
             1
-            for pid, sr in screened.items()
+            for sr in screened.values()
             if sr["human"] is not None
             and int(sr["human"]["score"]) == score
             and sr["decision"] == ReviewDecision.PURSUE
-            and pid not in tailored
-            and pid in passing
+            and sr["posting_id"] not in tailored_ids
+            and sr["posting_id"] in passing
         )
         if to_tailor:
             text += f" ({to_tailor} to tailor)"
@@ -175,17 +188,21 @@ def print_status() -> None:
             if row["actionable"] and row["posting_id"] not in human_reviewed
         ),
         "Pending Human Review:": _stale_suffix(
-            pid
-            for pid, sr in screened.items()
-            if sr["decision"] == ReviewDecision.PENDING and pid in passing
+            sr["posting_id"]
+            for sr in screened.values()
+            if sr["decision"] == ReviewDecision.PENDING and sr["posting_id"] in passing
         ),
         "Pending Tailoring:": _stale_suffix(
-            pid
-            for pid, sr in screened.items()
-            if sr["decision"] == ReviewDecision.PURSUE and pid not in tailored and pid in passing
+            sr["posting_id"]
+            for sr in screened.values()
+            if sr["decision"] == ReviewDecision.PURSUE
+            and sr["posting_id"] not in tailored_ids
+            and sr["posting_id"] in passing
         ),
         "Pending Review:": _stale_suffix(
-            pid for pid in tailored if pid not in tracked and pid in passing
+            row["posting_id"]
+            for row in tailored.values()
+            if row["posting_id"] not in tracked_ids and row["posting_id"] in passing
         ),
     }
 
@@ -198,11 +215,11 @@ def print_status() -> None:
         return f" ({', '.join(parts)})" if parts else ""
 
     validity_note = {
-        "Total Screened:": _breakdown(screened),
-        "Packages Built:": _breakdown(tailored),
+        "Total Screened:": _breakdown(_ids(screened)),
+        "Packages Built:": _breakdown(_ids(tailored)),
         **{
             f"{status.value.capitalize()}:": _breakdown(
-                pid for pid, row in tracked.items() if row["status"] == status
+                row["posting_id"] for row in tracked.values() if row["status"] == status
             )
             for status in TrackStatus
         },
@@ -242,7 +259,7 @@ def print_status() -> None:
                 ("Pending Human Review:", pending_human, YELLOW),
                 (
                     "Pending Tailoring:",
-                    _pending_tailoring(screened, set(tailored), enriched),
+                    _pending_tailoring(screened, tailored_ids, enriched),
                     GREEN,
                 ),
             ],
@@ -251,7 +268,7 @@ def print_status() -> None:
             "TAILORING",
             [
                 ("Packages Built:", len(tailored), BLUE),
-                ("Pending Review:", _pending_review(set(tailored), set(tracked), enriched), GREEN),
+                ("Pending Review:", _pending_review(tailored_ids, tracked_ids, enriched), GREEN),
             ],
         ),
         (
@@ -317,9 +334,9 @@ def _run_next() -> None:
             enrich_next()
             return
 
-    human_reviewed = {pid for pid, sr in screened.items() if sr["human"] is not None}
+    human_reviewed = {sr["posting_id"] for sr in screened.values() if sr["human"] is not None}
     if pending := _pending_screening(enriched, human_reviewed):
-        ai_reviewed = {pid for pid, sr in screened.items() if sr["ai"] is not None}
+        ai_reviewed = {sr["posting_id"] for sr in screened.values() if sr["ai"] is not None}
         lacking = _pending_ai_screening(enriched, human_reviewed, ai_reviewed)
         extra = f" ({lacking} lacking LLM screening)" if lacking else ""
         threshold = load_config()["stale_after_days"]
@@ -367,14 +384,14 @@ def _run_next() -> None:
             screen_next(None, None)
             return
 
-    if pending := _pending_tailoring(screened, set(tailored), enriched):
+    if pending := _pending_tailoring(screened, _ids(tailored), enriched):
         threshold = load_config()["stale_after_days"]
         stale_rows = [
             row
             for row in enriched
-            if (sr := screened.get(row["posting_id"])) is not None
+            if (sr := screened.get(store_key(row["provider"], row["posting_id"]))) is not None
             and sr["decision"] == ReviewDecision.PURSUE
-            and row["posting_id"] not in tailored
+            and store_key(row["provider"], row["posting_id"]) not in tailored
             and row["actionable"]
             and is_stale(row, threshold)
         ]
@@ -396,7 +413,7 @@ def _run_next() -> None:
             tailor_next(False)
             return
 
-    if _pending_review(set(tailored), set(tracked), enriched):
+    if _pending_review(_ids(tailored), _ids(tracked), enriched):
         review_next()
         return
 
@@ -418,6 +435,7 @@ def _run_next_for_id(posting_id: str) -> None:
     lead = next((row for row in leads if row["posting_id"] == posting_id), None)
     if lead is None:
         raise ShobrError(f"posting {posting_id} not found in leads store")
+    key = store_key(current_provider().name, posting_id)
     enriched_rows = {row["posting_id"]: row for row in enriched}
     if posting_id not in enriched_rows:
         if _confirm(
@@ -432,10 +450,14 @@ def _run_next_for_id(posting_id: str) -> None:
         reason = enriched_rows[posting_id]["rejected_reason"] or "unknown reason"
         raise ShobrError(f"posting {posting_id} did not pass the pre-filter ({reason})")
 
-    sr = screened.get(posting_id)
+    sr = screened.get(key)
     if sr is None or sr["human"] is None:
-        human_reviewed = {pid for pid, review in screened.items() if review["human"] is not None}
-        ai_reviewed = {pid for pid, review in screened.items() if review["ai"] is not None}
+        human_reviewed = {
+            review["posting_id"] for review in screened.values() if review["human"] is not None
+        }
+        ai_reviewed = {
+            review["posting_id"] for review in screened.values() if review["ai"] is not None
+        }
         if posting_id not in ai_reviewed and posting_id not in human_reviewed:
             answer = (
                 input(
@@ -463,7 +485,7 @@ def _run_next_for_id(posting_id: str) -> None:
     if sr["decision"] != ReviewDecision.PURSUE:
         print(f"nothing to do for {posting_id}")
         return
-    if posting_id not in tailored:
+    if key not in tailored:
         if _confirm(
             f"Tailor {posting_id}? ({BLUE}shobr tailor {posting_id}{RESET}) {BOLD}[y/N]{RESET} "
         ):
@@ -471,7 +493,7 @@ def _run_next_for_id(posting_id: str) -> None:
             return
         print(f"nothing to do for {posting_id}")
         return
-    if posting_id not in tracked:
+    if key not in tracked:
         review_posting_id(posting_id)
         return
     print(f"nothing to do for {posting_id}")

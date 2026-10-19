@@ -27,6 +27,7 @@ from .core import (
     same_company_line,
     short_path,
     stage_line,
+    store_key,
     store_path,
 )
 from .enrichment import (
@@ -39,6 +40,7 @@ from .enrichment import (
     staleness_tag,
     validity_tag,
 )
+from .providers.base import current_provider, row_provider
 
 _PROFILE_DIR = SHOBR_CONFIG_DIR / "profile"
 
@@ -237,6 +239,7 @@ class _ScreeningReview(TypedDict):
 
     scored_at: str
     posting_id: str
+    provider: str
     kind: _ReviewKind
     score: Score
     reasoning: str
@@ -274,16 +277,17 @@ class ScreeningRow(TypedDict):
     """A job's screening state as projected into screening.json"""
 
     posting_id: str
+    provider: str
     human: _HumanReview | None
     ai: _AIReview | None
     decision: ReviewDecision
 
 
 class _ScreenedStore(TypedDict):
-    """Projected reviews keyed by posting id."""
+    """Projected reviews keyed by provider/posting_id."""
 
     screened_at: str | None
-    rows: dict[str, ScreeningRow]  # keyed by posting_id
+    rows: dict[str, ScreeningRow]  # keyed by provider/posting_id
 
 
 def _screening_decision(human: _HumanReview | None, ai: _AIReview | None) -> ReviewDecision:
@@ -301,34 +305,42 @@ def _screening_decision(human: _HumanReview | None, ai: _AIReview | None) -> Rev
     return ReviewDecision.SKIP
 
 
-def project_screening() -> _ScreenedStore:
+def project_screening(provider: str | None = None) -> _ScreenedStore:
     """Replay the screening events log into the projection shape (screening.json).
 
-    Keyed by posting_id. Latest-wins per review kind per posting: a later human
-    (or AI) review replaces the earlier one of the same kind.
+    Latest-wins per review kind per posting: a later human (or AI) review
+    replaces the earlier one of the same kind.
     """
     if not (events := read_events(DataKind.SCREENING)):
         return {"screened_at": None, "rows": {}}
     human: dict[str, _HumanReview] = {}
     ai: dict[str, _AIReview] = {}
 
-    for event in events:
+    for raw in events:
+        event = cast(_ScreeningReview, {**raw, "provider": row_provider(raw)})
+        if provider is not None and event["provider"] != provider:
+            continue
+        key = store_key(event["provider"], event["posting_id"])
         if event["kind"] == _ReviewKind.HUMAN:
-            human[event["posting_id"]] = event
+            human[key] = cast(_HumanReview, event)
         elif event["kind"] == _ReviewKind.AI:
-            ai[event["posting_id"]] = event
+            ai[key] = cast(_AIReview, event)
 
     rows: dict[str, ScreeningRow] = {}
 
-    def _row_order(posting_id: str) -> tuple[str, str]:
-        reviews = [r for r in (human.get(posting_id), ai.get(posting_id)) if r is not None]
-        return (max(review["scored_at"] for review in reviews), posting_id)
+    def _row_order(key: str) -> tuple[str, str]:
+        reviews = [r for r in (human.get(key), ai.get(key)) if r is not None]
+        return (max(review["scored_at"] for review in reviews), key)
 
-    for posting_id in sorted(human.keys() | ai.keys(), key=_row_order, reverse=True):
-        h = human.get(posting_id)
-        a = ai.get(posting_id)
-        rows[posting_id] = ScreeningRow(
-            posting_id=posting_id,
+    keys = sorted(human.keys() | ai.keys(), key=_row_order, reverse=True)
+    for key in keys:
+        h = human.get(key)
+        a = ai.get(key)
+        review = h if h is not None else a
+        assert review is not None, "key came from human or ai"
+        rows[key] = ScreeningRow(
+            posting_id=review["posting_id"],
+            provider=row_provider(review),
             human=h,
             ai=a,
             decision=_screening_decision(h, a),
@@ -404,7 +416,7 @@ def print_screened(score_filter: str | None = None) -> None:
     """Print the screening store summary, optionally filtered by score."""
     with paged():
         require_events(DataKind.SCREENING)
-        screened = project_screening()
+        screened = project_screening(current_provider().name)
 
         wanted = (
             _parse_score_filter(score_filter)
@@ -421,7 +433,11 @@ def print_screened(score_filter: str | None = None) -> None:
 
         rows = [row for row in screened["rows"].values() if keep(row)]
         assert event_log(DataKind.ENRICHMENT).exists(), "screening data implies enrichment data"
-        passing = {pid for pid, row in project_enrichment()["rows"].items() if row["actionable"]}
+        passing = {
+            row["posting_id"]
+            for row in project_enrichment(current_provider().name)["rows"].values()
+            if row["actionable"]
+        }
         pursue = sum(1 for row in rows if row["decision"] == ReviewDecision.PURSUE)
         skip = sum(1 for row in rows if row["decision"] == ReviewDecision.SKIP)
         pending = sum(
@@ -440,16 +456,16 @@ def print_screened(score_filter: str | None = None) -> None:
             f"{YELLOW}{pending}{RESET} pending human review)"
         )
         print()
-        enriched = project_enrichment()
+        enriched = project_enrichment(current_provider().name)
         for row in rows:
-            eref = enriched["rows"][row["posting_id"]]
+            eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
             print(f"[{eref['company']}] {row['posting_id']}{validity_tag(eref)}")
             pills = pill_line(eref)
             print(f"  - {eref['title']}")
             if pills:
                 print(f"  - {pills}")
             print_screening_status(row, "  ")
-            print(stage_line(row["posting_id"], DataKind.SCREENING))
+            print(stage_line(row["provider"], row["posting_id"], DataKind.SCREENING))
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
             threshold = load_config()["stale_after_days"]
             print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
@@ -458,7 +474,7 @@ def print_screened(score_filter: str | None = None) -> None:
             ]
             reviewed = datetime.fromisoformat(max(scored)).date().isoformat()
             print(f"  - Reviewed At: {reviewed}")
-            if line := same_company_line(eref["company"], row["posting_id"]):
+            if line := same_company_line(eref["company"], eref["provider"], row["posting_id"]):
                 print(line)
 
         print()
@@ -472,12 +488,13 @@ def _record_review(row: EnrichedRow, score: int, reasoning: str, kind: _ReviewKi
     event = {
         "scored_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "posting_id": row["posting_id"],
+        "provider": row["provider"],
         "kind": kind,
         "score": score,
         "reasoning": reasoning,
     }
     screened = persist_event(DataKind.SCREENING, event, project_screening)
-    sr = screened["rows"][row["posting_id"]]
+    sr = screened["rows"][store_key(row["provider"], row["posting_id"])]
     label = "human" if kind is _ReviewKind.HUMAN else "AI"
     print(f"Recorded {label} review:")
     print(f"  - {BOLD}Score:{RESET} {SCORE_COLORS[int(score)]}{score}{RESET}")
@@ -551,7 +568,9 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
 """
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
     threshold = load_config()["stale_after_days"]
-    company_line = same_company_line(row["company"], row["posting_id"], plain=True) or ""
+    company_line = (
+        same_company_line(row["company"], row["provider"], row["posting_id"], plain=True) or ""
+    )
     return render_template(
         "editor-screening.md",
         company=row["company"],
@@ -621,7 +640,7 @@ def _screen_row_via_editor(row: EnrichedRow, ai: _AIReview | None) -> None:
 
 def _print_screening_line(row: EnrichedRow, screened: _ScreenedStore) -> None:
     """The per-posting line shown before screening a row."""
-    sr = screened["rows"].get(row["posting_id"])
+    sr = screened["rows"].get(store_key(row["provider"], row["posting_id"]))
     print("  - Screening:")
     print_screening_status(sr, "    ")
 
@@ -646,7 +665,7 @@ def _screen_row(
     if score is not None and reason is not None:
         _record_review(row, score, reason, _ReviewKind.HUMAN)
         return
-    sr = screened["rows"].get(row["posting_id"])
+    sr = screened["rows"].get(store_key(row["provider"], row["posting_id"]))
     _screen_row_via_editor(row, sr["ai"] if sr else None)
 
 
@@ -665,7 +684,7 @@ def oldest_missing_review(
             continue
         if row["posting_id"] in exclude:
             continue
-        sr = screened.get(row["posting_id"])
+        sr = screened.get(store_key(row["provider"], row["posting_id"]))
         if sr is not None:
             if sr[kind] is not None:
                 continue
@@ -677,7 +696,8 @@ def oldest_missing_review(
 
 def _has_human_review(posting_id: str) -> bool:
     """Whether the posting already carries a human review."""
-    sr = project_screening()["rows"].get(posting_id)
+    provider = current_provider().name
+    sr = project_screening(provider)["rows"].get(store_key(provider, posting_id))
     return sr is not None and sr["human"] is not None
 
 
@@ -708,7 +728,7 @@ def screen_next(score: int | None, reason: str | None, force: bool = False) -> N
     """Record a human screening for the oldest enriched passing lead with no
     human review yet."""
     rows = get_enriched_rows()
-    screened = project_screening()
+    screened = project_screening(current_provider().name)
     row = oldest_missing_review(rows, screened["rows"], "human")
     if row is None:
         print("no leads to screen")
@@ -721,7 +741,7 @@ def screen_posting_id(
 ) -> None:
     """Record a human screening for a specific enriched posting."""
     row = get_enriched_row_on_stage(posting_id, "screenable")
-    screened = project_screening()
+    screened = project_screening(current_provider().name)
     _screen_row(row, screened, score, reason, force)
 
 
@@ -729,7 +749,7 @@ def screen_llm_next(print_prompt: bool, force: bool = False) -> None:
     """Record an LLM screening for the oldest enriched passing lead with no
     human review yet."""
     rows = get_enriched_rows()
-    screened = project_screening()
+    screened = project_screening(current_provider().name)
     row = oldest_missing_review(rows, screened["rows"], "ai")
     if row is None:
         print("no leads to screen")
@@ -762,13 +782,13 @@ def screen_llm_all(force: bool = False) -> None:
     rows = get_enriched_rows()
     _load_profile()  # fail fast on invalid profile
     threshold = load_config()["stale_after_days"]
-    screened = project_screening()["rows"]
+    screened = project_screening(current_provider().name)["rows"]
     pending = [
         row
         for row in rows.values()
         if row["actionable"]
         and (
-            (sr := screened.get(row["posting_id"])) is None
+            (sr := screened.get(store_key(row["provider"], row["posting_id"]))) is None
             or (sr["ai"] is None and sr["human"] is None)
         )
     ]
@@ -782,12 +802,12 @@ def screen_llm_all(force: bool = False) -> None:
     rows = {
         pid: row
         for pid, row in sorted(rows.items(), key=lambda kv: is_stale(kv[1], threshold))
-        if force or pid not in skipped
+        if force or row["posting_id"] not in skipped
     }
     scored = 0
     failed: list[str] = []
     while True:
-        screened = project_screening()["rows"]
+        screened = project_screening(current_provider().name)["rows"]
         row = oldest_missing_review(rows, screened, "ai", exclude=frozenset(failed))
         if row is None:
             break

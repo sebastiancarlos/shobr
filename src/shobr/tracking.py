@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
 from .config import load_config
@@ -16,6 +16,7 @@ from .core import (
     require_events,
     same_company_line,
     short_path,
+    store_key,
     store_path,
 )
 from .enrichment import (
@@ -27,6 +28,7 @@ from .enrichment import (
     validity_tag,
     warn_if_stale,
 )
+from .providers.base import current_provider, row_provider
 from .screening import pill_line, print_screening_status, project_screening
 from .tailoring import TailoringRow, project_tailoring
 
@@ -56,6 +58,7 @@ class TrackEvent(TypedDict):
     """A recorded status transition."""
 
     posting_id: str
+    provider: str
     status: TrackStatus
     note: str | None
     tracked_at: str
@@ -68,30 +71,33 @@ class TrackedRow(TrackEvent):
 
 
 class TrackedStore(TypedDict):
-    """Projected statuses keyed by posting id."""
+    """Projected statuses keyed by provider/posting_id."""
 
     tracked_at: str | None
     rows: dict[str, TrackedRow]
 
 
-def project_tracking() -> TrackedStore:
+def project_tracking(provider: str | None = None) -> TrackedStore:
     """Replay the tracking events log.
 
-    Latest-wins per posting_id, plus the first transition time.
-    """
+    Latest-wins per posting, plus the first transition time."""
     if not (events := read_events(DataKind.TRACKING)):
         return {"tracked_at": None, "rows": {}}
     rows: dict[str, TrackedRow] = {}
     first: dict[str, str] = {}
-    for event in events:
-        posting_id = event["posting_id"]
-        first.setdefault(posting_id, event["tracked_at"])
-        rows[posting_id] = TrackedRow(
-            posting_id=posting_id,
+    for raw in events:
+        event = cast(TrackEvent, {**raw, "provider": row_provider(raw)})
+        if provider is not None and event["provider"] != provider:
+            continue
+        key = store_key(event["provider"], event["posting_id"])
+        first.setdefault(key, event["tracked_at"])
+        rows[key] = TrackedRow(
+            posting_id=event["posting_id"],
+            provider=event["provider"],
             status=TrackStatus(event["status"]),
             note=event["note"],
             tracked_at=event["tracked_at"],
-            first_tracked_at=first[posting_id],
+            first_tracked_at=first[key],
         )
     return {"tracked_at": events[-1]["tracked_at"], "rows": rows}
 
@@ -99,21 +105,26 @@ def project_tracking() -> TrackedStore:
 def trackable_row(posting_id: str) -> TailoringRow:
     """Return the packaged row for `posting_id`, raising when not trackable."""
     require_events(DataKind.TAILORING)
-    row = project_tailoring()["rows"].get(posting_id)
+    provider = current_provider().name
+    key = store_key(provider, posting_id)
+    row = project_tailoring(provider)["rows"].get(key)
     if row is not None:
         return row
-    if event_log(DataKind.ENRICHMENT).exists() and posting_id in project_enrichment()["rows"]:
+    if event_log(DataKind.ENRICHMENT).exists() and key in project_enrichment(provider)["rows"]:
         raise ShobrError(f"posting {posting_id} has no package yet")
     raise ShobrError(f"posting {posting_id} not found in enrichment store")
 
 
 def _record_transition(row: TailoringRow, status: TrackStatus, note: str | None) -> None:
     """Persist (as event and on store) and report a status transition."""
-    previous = project_tracking()["rows"].get(row["posting_id"])
+    previous = project_tracking(current_provider().name)["rows"].get(
+        store_key(row["provider"], row["posting_id"])
+    )
     was = previous["status"].upper() if previous else "UNTRACKED"
     event: TrackEvent = {
         "tracked_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "posting_id": row["posting_id"],
+        "provider": row["provider"],
         "status": status,
         "note": note,
     }
@@ -136,7 +147,12 @@ def track_posting_id(posting_id: str, status: str, note: str | None) -> None:
             f"invalid status {status!r}; choose from " + ", ".join(s.value for s in TrackStatus)
         ) from None
     row = trackable_row(posting_id)
-    warn_if_stale(project_enrichment()["rows"][posting_id], load_config()["stale_after_days"])
+    warn_if_stale(
+        project_enrichment(current_provider().name)["rows"][
+            store_key(row["provider"], row["posting_id"])
+        ],
+        load_config()["stale_after_days"],
+    )
     _record_transition(row, track_status, note)
 
 
@@ -144,7 +160,7 @@ def print_tracked() -> None:
     """Print the tracking store summary."""
     with paged():
         require_events(DataKind.TRACKING)
-        tracked = project_tracking()
+        tracked = project_tracking(current_provider().name)
 
         counts = {status: 0 for status in TrackStatus}
         for row in tracked["rows"].values():
@@ -155,9 +171,9 @@ def print_tracked() -> None:
         print(f"{len(tracked['rows'])} tracked ({breakdown})")
         print()
         assert event_log(DataKind.ENRICHMENT).exists(), "tracking data implies enrichment data"
-        enriched = project_enrichment()
+        enriched = project_enrichment(current_provider().name)
         for row in tracked["rows"].values():
-            eref = enriched["rows"][row["posting_id"]]
+            eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
             print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")
             color = TRACK_STATUS_COLORS[row["status"]]
@@ -177,7 +193,7 @@ def _print_review(row: TailoringRow) -> None:
     with paged():
         # print enrichment info
         rows = get_enriched_rows()
-        eref = rows.get(row["posting_id"])
+        eref = rows.get(store_key(row["provider"], row["posting_id"]))
         if eref is None:
             raise ShobrError(f"posting {row['posting_id']} not found in enrichment store")
         print(f"[{eref['company']}] {row['posting_id']}{validity_tag(eref)}")
@@ -193,11 +209,13 @@ def _print_review(row: TailoringRow) -> None:
         if pills:
             print(f"  - {pills}")
         print_apply_block(eref)
-        if line := same_company_line(eref["company"], row["posting_id"]):
+        if line := same_company_line(eref["company"], eref["provider"], row["posting_id"]):
             print(line)
 
         # print screening info
-        sr = project_screening()["rows"].get(row["posting_id"])
+        sr = project_screening(current_provider().name)["rows"].get(
+            store_key(row["provider"], row["posting_id"])
+        )
         if sr is None:
             print("  - Screening: N/A")
         else:
@@ -205,7 +223,9 @@ def _print_review(row: TailoringRow) -> None:
             print_screening_status(sr, "    ")
 
         # print tracking info
-        tracked = project_tracking()["rows"].get(row["posting_id"])
+        tracked = project_tracking(current_provider().name)["rows"].get(
+            store_key(row["provider"], row["posting_id"])
+        )
         print("  - Tracking:")
         if tracked is None:
             print("    - Status: UNTRACKED")
@@ -237,12 +257,16 @@ def review_next() -> None:
     """Print the full package for the oldest packaged posting with no
     tracking event yet."""
     require_events(DataKind.TAILORING)
-    tracked = project_tracking()["rows"]
-    passing = {pid for pid, row in project_enrichment()["rows"].items() if row["actionable"]}
-    for posting_id, row in project_tailoring()["rows"].items():
-        if posting_id in tracked or posting_id not in passing:
+    tracked = project_tracking(current_provider().name)["rows"]
+    passing = {
+        row["posting_id"]
+        for row in project_enrichment(current_provider().name)["rows"].values()
+        if row["actionable"]
+    }
+    for key, row in project_tailoring(current_provider().name)["rows"].items():
+        if key in tracked or row["posting_id"] not in passing:
             continue
         _print_review(row)
-        print(f"If you applied, track it: {BLUE}shobr track {posting_id} applied{RESET}")
+        print(f"If you applied, track it: {BLUE}shobr track {row['posting_id']} applied{RESET}")
         return
     print("nothing to review")

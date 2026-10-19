@@ -24,6 +24,7 @@ from shobr.browser import BEACHPATROL_COMMANDS_LOCAL_DIR
 from shobr.core import get_template
 from shobr.cv_toolchain import ROFFUME_PIN, ROFFUME_URL
 from shobr.notification import is_blocked, notification_key
+from shobr.providers.base import DEFAULT_PROVIDER
 
 CONFIG_DEFAULT = get_template("config.toml")
 
@@ -465,6 +466,16 @@ class FakeLLMServer:
 _SNAPSHOTS: dict[str, Path] = {}
 
 
+def stored_rows(path: Path) -> dict[str, dict]:
+    """A persisted store's rows, keyed by provider/posting_id as on disk."""
+    return json.loads(path.read_text())["rows"]
+
+
+def stored_key(posting_id: str) -> str:
+    """The persisted store key for a posting id; the suite runs one board."""
+    return f"{DEFAULT_PROVIDER}/{posting_id}"
+
+
 def _build_snapshot(
     name: str,
     pages: dict[str, str | list[str]],
@@ -512,9 +523,9 @@ def _build_snapshot(
         snapshot = Path(tempfile.mkdtemp(prefix="shobr-snapshot-")) / "shobr"
         shutil.copytree(data_home.shobr_data, snapshot)
         if expect_enriched is not None:
-            rows = json.loads((snapshot / "enrichment" / "enrichment.json").read_text())["rows"]
+            rows = stored_rows(snapshot / "enrichment" / "enrichment.json")
             for posting_id, passing in expect_enriched.items():
-                row = rows.get(posting_id)
+                row = rows.get(stored_key(posting_id))
                 if row is None or row["actionable"] != passing:
                     raise AssertionError(
                         f"snapshot {name} missing "
@@ -703,6 +714,7 @@ def seed_human_review(
         {
             "scored_at": "2026-09-13T00:00:00+00:00",
             "posting_id": posting_id,
+            "provider": "linkedin",
             "kind": "human_review",
             "score": score,
             "reasoning": "hand-written human review",
@@ -721,6 +733,7 @@ def seed_tracking(
             {
                 "tracked_at": "2026-09-13T00:00:00+00:00",
                 "posting_id": posting_id,
+                "provider": "linkedin",
                 "status": status,
                 "note": None,
             }
@@ -738,6 +751,7 @@ def seed_tailored_package(data_home: TestDataHome, posting_id: str = "5550000001
             {
                 "tailored_at": "2026-09-13T00:00:00+00:00",
                 "posting_id": posting_id,
+                "provider": "linkedin",
                 "slug": f"testco-{posting_id}",
                 "app_dir": f"/tmp/{posting_id}",
                 "rewrites": 0,
@@ -780,6 +794,7 @@ def seed_minimal_lead(
             "rows": [
                 {
                     "posting_id": posting_id,
+                    "provider": "linkedin",
                     "posting_url": posting_url,
                     "title": "Test Engineer",
                     "company": "TestCo",
@@ -798,6 +813,7 @@ def seed_enrichment_event(
     posting_url = f"https://www.linkedin.com/jobs/view/{posting_id}"
     event = {
         "posting_id": posting_id,
+        "provider": "linkedin",
         "posting_url": posting_url,
         "title": "Test Engineer",
         "company": "TestCo",
@@ -1456,25 +1472,38 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(len(events), 1)
                     event = events[0]
                     self.assertNotIn(".", event["fetched_at"])
+                    self.assertEqual(event["source"]["type"], "query")
+                    query = event["source"]["query"]
+                    self.assertEqual(query["provider"], "linkedin")
+                    self.assertTrue(query["url"].startswith(server.url))
                     self.assertEqual(
-                        event["source"],
                         {
-                            "type": "query",
-                            "query": {
-                                "titles": [
-                                    "Technical Lead",
-                                    "Software Engineer",
-                                    "Senior Software Engineer",
-                                ],
-                                "workplace_types": ["on-site", "hybrid", "remote"],
-                                "geo": ["testville-city", "testville-dept"],
-                            },
+                            "titles": query["titles"],
+                            "workplace_types": query["workplace_types"],
+                            "geo": query["geo"],
+                        },
+                        {
+                            "titles": [
+                                "Technical Lead",
+                                "Software Engineer",
+                                "Senior Software Engineer",
+                            ],
+                            "workplace_types": ["on-site", "hybrid", "remote"],
+                            "geo": ["testville-city", "testville-dept"],
                         },
                     )
                     rows = event["rows"]
-                    raw_keys = {"company", "location", "posting_id", "posting_url", "title"}
+                    raw_keys = {
+                        "company",
+                        "location",
+                        "posting_id",
+                        "posting_url",
+                        "title",
+                        "provider",
+                    }
                     self.assertEqual(len(rows), 12)
                     self.assertTrue(all(set(row) == raw_keys for row in rows))
+                    self.assertTrue(all(row["provider"] == "linkedin" for row in rows))
                     self.assertTrue(
                         all(row["title"] and row["company"] and row["location"] for row in rows),
                         "\n".join(str(row) for row in rows),
@@ -1642,6 +1671,7 @@ class TestCLI(unittest.TestCase):
                     {
                         "tracked_at": tracked_at,
                         "posting_id": "1111111111",
+                        "provider": "linkedin",
                         "status": "applied",
                         "note": None,
                     },
@@ -1675,6 +1705,7 @@ class TestCLI(unittest.TestCase):
                 {
                     "tailored_at": "2026-09-13T00:00:00+00:00",
                     "posting_id": "2222222222",
+                    "provider": "linkedin",
                     "slug": "testco-2222222222",
                     "app_dir": "/tmp/2222222222",
                     "rewrites": 0,
@@ -1734,6 +1765,7 @@ class TestCLI(unittest.TestCase):
                         "rows": [
                             {
                                 "posting_id": "1234567890",
+                                "provider": "linkedin",
                                 "posting_url": "https://www.linkedin.com/jobs/view/1234567890",
                                 "title": "Test Engineer",
                                 "company": "TestCo",
@@ -1786,12 +1818,10 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn("REJECTED: recent application at same company", result.stdout)
 
-            rows = json.loads(
-                (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
-            )["rows"]
-            self.assertFalse(rows["2222222222"]["actionable"])
+            rows = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
+            self.assertFalse(rows[stored_key("2222222222")]["actionable"])
             self.assertEqual(
-                rows["2222222222"]["rejected_reason"],
+                rows[stored_key("2222222222")]["rejected_reason"],
                 "recent application at same company",
             )
             result = shobr("enriched", env=data_home.env)
@@ -1833,6 +1863,7 @@ class TestCLI(unittest.TestCase):
                 {
                     "tracked_at": "2026-05-01T00:00:00+00:00",
                     "posting_id": "1111111111",
+                    "provider": "linkedin",
                     "status": "applied",
                     "note": None,
                 },
@@ -1842,16 +1873,17 @@ class TestCLI(unittest.TestCase):
                 {
                     "tracked_at": "2026-09-01T00:00:00+00:00",
                     "posting_id": "1111111111",
+                    "provider": "linkedin",
                     "status": "ghosted",
                     "note": None,
                 },
             )
             result = shobr("track", "1111111111", "ghosted", env=data_home.env)
             self.assertEqual(result.returncode, 0, result.stderr)
-            tracked = json.loads((data_home.shobr_data / "tracking" / "tracking.json").read_text())[
-                "rows"
-            ]
-            self.assertEqual(tracked["1111111111"]["first_tracked_at"], "2026-05-01T00:00:00+00:00")
+            tracked = stored_rows(data_home.shobr_data / "tracking" / "tracking.json")
+            self.assertEqual(
+                tracked[stored_key("1111111111")]["first_tracked_at"], "2026-05-01T00:00:00+00:00"
+            )
             result = shobr("discovered", env=data_home.env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertNotIn("recent application at same company", result.stdout)
@@ -1868,6 +1900,7 @@ class TestCLI(unittest.TestCase):
                 {
                     "tailored_at": "2026-09-13T00:00:00+00:00",
                     "posting_id": "3333333333",
+                    "provider": "linkedin",
                     "slug": "testco-3333333333",
                     "app_dir": "/tmp/3333333333",
                     "rewrites": 0,
@@ -1880,6 +1913,7 @@ class TestCLI(unittest.TestCase):
                 {
                     "tracked_at": "2026-01-01T00:00:00+00:00",
                     "posting_id": "1111111111",
+                    "provider": "linkedin",
                     "status": "applied",
                     "note": None,
                 },
@@ -2070,12 +2104,10 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(lead["discovered_method"], {"type": "manual"})
             self.assertTrue(lead["actionable"])
 
-            enriched_rows = json.loads(
-                (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
-            )["rows"]
-            self.assertTrue(enriched_rows["5550000009"]["actionable"])
-            self.assertEqual(enriched_rows["5550000009"]["apply_method"], "external")
-            self.assertNotIn("raw_html", enriched_rows["5550000009"])
+            enriched_rows = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
+            self.assertTrue(enriched_rows[stored_key("5550000009")]["actionable"])
+            self.assertEqual(enriched_rows[stored_key("5550000009")]["apply_method"], "external")
+            self.assertNotIn("raw_html", enriched_rows[stored_key("5550000009")])
 
             events = [
                 json.loads(line)
@@ -2427,6 +2459,7 @@ class TestCLI(unittest.TestCase):
                         "rows": [
                             {
                                 "posting_id": posting_id,
+                                "provider": "linkedin",
                                 "posting_url": (f"https://www.linkedin.com/jobs/view/{posting_id}"),
                                 "title": "Test Engineer",
                                 "company": "TestCo",
@@ -2559,9 +2592,9 @@ class TestCLI(unittest.TestCase):
                         "leading provider of widget infrastructure", event["company_description"]
                     )
 
-                    enriched = json.loads(enriched_path.read_text())
-                    self.assertIn("5550000001", enriched["rows"])
-                    row = enriched["rows"]["5550000001"]
+                    enriched = stored_rows(enriched_path)
+                    self.assertIn(stored_key("5550000001"), enriched)
+                    row = enriched[stored_key("5550000001")]
                     self.assertEqual(row["apply_method"], "external")
                     self.assertIn("enriched_last_at", row)
 
@@ -2916,8 +2949,7 @@ class TestCLI(unittest.TestCase):
 
                     # ensure it's rejected
                     enriched_path = data_home.shobr_data / "enrichment" / "enrichment.json"
-                    projected = json.loads(enriched_path.read_text())
-                    row = projected["rows"]["5550000002"]
+                    row = stored_rows(enriched_path)[stored_key("5550000002")]
                     self.assertFalse(row["actionable"])
                     self.assertEqual(row["rejected_reason"], "no longer accepting applications")
 
@@ -3038,6 +3070,7 @@ class TestCLI(unittest.TestCase):
                         {
                             "scored_at": "2026-09-13T00:00:00+00:00",
                             "posting_id": "1234567890",
+                            "provider": "linkedin",
                             "kind": "ai_review",
                             "score": 4,
                             "reasoning": "fake ai review",
@@ -3076,6 +3109,7 @@ class TestCLI(unittest.TestCase):
                         {
                             "scored_at": "2026-09-13T00:00:00+00:00",
                             "posting_id": "5550000041",
+                            "provider": "linkedin",
                             "kind": "ai_review",
                             "score": 4,
                             "reasoning": "fake ai review",
@@ -3182,10 +3216,8 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(event["reasoning"], "good fit")
             self.assertNotIn(".", event["scored_at"], "timestamps truncated to seconds")
 
-            screened = json.loads(
-                (data_home.shobr_data / "screening" / "screening.json").read_text()
-            )
-            row = screened["rows"]["5550000001"]
+            screened = stored_rows(data_home.shobr_data / "screening" / "screening.json")
+            row = screened[stored_key("5550000001")]
             self.assertEqual(row["human"]["score"], 4)
             self.assertEqual(row["ai"], None)
             self.assertEqual(row["decision"], "pursue")
@@ -3556,10 +3588,8 @@ class TestCLI(unittest.TestCase):
                 self.assertEqual(event["reasoning"], "fake llm says good fit")
                 self.assertNotIn(".", event["scored_at"], "timestamps truncated")
 
-                screened = json.loads(
-                    (data_home.shobr_data / "screening" / "screening.json").read_text()
-                )
-                row = screened["rows"]["5550000001"]
+                screened = stored_rows(data_home.shobr_data / "screening" / "screening.json")
+                row = screened[stored_key("5550000001")]
                 self.assertEqual(row["ai"]["score"], 4)
                 self.assertEqual(row["human"], None)
                 self.assertEqual(row["decision"], "pending")
@@ -4009,10 +4039,8 @@ class TestCLI(unittest.TestCase):
                 self.assertEqual(event["rewrites"], 0)
                 self.assertNotIn(".", event["tailored_at"], "timestamps truncated")
 
-                tailored = json.loads(
-                    (data_home.shobr_data / "tailoring" / "tailoring.json").read_text()
-                )
-                row = tailored["rows"]["5550000001"]
+                tailored = stored_rows(data_home.shobr_data / "tailoring" / "tailoring.json")
+                row = tailored[stored_key("5550000001")]
                 self.assertEqual(row["slug"], "fakeco-5550000001")
                 self.assertEqual(row["resume_md"], (app_dir / "resume.md").read_text())
                 self.assertEqual(row["cover_md"], (app_dir / "cover-letter.md").read_text())
@@ -4059,10 +4087,8 @@ class TestCLI(unittest.TestCase):
                 result = shobr("tailor-all", env={**env, **llm_server.env})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("Built 2 packages.", result.stdout)
-            tailored = json.loads(
-                (data_home.shobr_data / "tailoring" / "tailoring.json").read_text()
-            )
-            self.assertEqual(set(tailored["rows"]), {"5550000001", "5550000011"})
+            tailored = stored_rows(data_home.shobr_data / "tailoring" / "tailoring.json")
+            self.assertEqual(set(tailored), {stored_key("5550000001"), stored_key("5550000011")})
 
     def test_tailor_all_skips_stale(self) -> None:
         """tailor-all skips stale rows with a preflight line."""
@@ -4081,10 +4107,8 @@ class TestCLI(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("1 of 2 rows", result.stdout)
                 self.assertIn("Built 1 packages.", result.stdout)
-            tailored = json.loads(
-                (data_home.shobr_data / "tailoring" / "tailoring.json").read_text()
-            )
-            self.assertEqual(set(tailored["rows"]), {"5550000001"})
+            tailored = stored_rows(data_home.shobr_data / "tailoring" / "tailoring.json")
+            self.assertEqual(set(tailored), {stored_key("5550000001")})
 
     def test_tailor_all_force_builds_stale(self) -> None:
         """tailor-all --force builds stale packages too."""
@@ -4298,8 +4322,8 @@ class TestCLI(unittest.TestCase):
             self.assertIsNone(events[1]["note"])
             self.assertNotIn(".", events[0]["tracked_at"], "timestamps truncated")
 
-            tracked = json.loads((data_home.shobr_data / "tracking" / "tracking.json").read_text())
-            row = tracked["rows"]["5550000001"]
+            tracked = stored_rows(data_home.shobr_data / "tracking" / "tracking.json")
+            row = tracked[stored_key("5550000001")]
             self.assertEqual(row["status"], "interviewing")
             self.assertIsNone(row["note"])
 
@@ -4505,10 +4529,8 @@ class TestCLI(unittest.TestCase):
             self.assertIn("awaiting enrichment", result.stdout)
             self.assertIn("enrich-next", result.stdout)
 
-            enriched = json.loads(
-                (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
-            )
-            self.assertEqual(len(enriched["rows"]), 1)
+            enriched = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
+            self.assertEqual(len(enriched), 1)
 
     def test_next_reports_screening(self) -> None:
         """'shobr next' with an unscreened enriched lead reports the screen
@@ -4615,11 +4637,9 @@ class TestCLI(unittest.TestCase):
 
                     result = shobr("next", env=env, input_text="y\n")
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    enriched = json.loads(
-                        (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
-                    )
-                    self.assertIn("5550000001", enriched["rows"])
-                    self.assertTrue(enriched["rows"]["5550000001"]["actionable"])
+                    enriched = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
+                    self.assertIn(stored_key("5550000001"), enriched)
+                    self.assertTrue(enriched[stored_key("5550000001")]["actionable"])
 
     def test_next_scores_with_llm_on_l(self) -> None:
         """'shobr next' answering l at screening records an AI review."""
@@ -4674,6 +4694,7 @@ class TestCLI(unittest.TestCase):
                     {
                         "scored_at": "2026-09-13T00:00:00+00:00",
                         "posting_id": "1234567890",
+                        "provider": "linkedin",
                         "kind": "ai_review",
                         "score": 4,
                         "reasoning": "fake llm says good fit",
@@ -4755,6 +4776,7 @@ class TestCLI(unittest.TestCase):
                     "rows": [
                         {
                             "posting_id": "5550000031",
+                            "provider": "linkedin",
                             "posting_url": "https://www.linkedin.com/jobs/view/5550000031",
                             "title": "Test Engineer",
                             "company": "TestCo",
@@ -4785,10 +4807,8 @@ class TestCLI(unittest.TestCase):
             result = shobr("next", "5550000012", env=env, input_text="n\n")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("nothing to do for 5550000012", result.stdout)
-            enriched = json.loads(
-                (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
-            )
-            self.assertEqual(len(enriched["rows"]), 1)
+            enriched = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
+            self.assertEqual(len(enriched), 1)
 
     def test_next_id_enriches_on_yes(self) -> None:
         """'shobr next <id>' answering yes enriches that posting."""
@@ -4809,10 +4829,8 @@ class TestCLI(unittest.TestCase):
                     }
                     result = shobr("next", "5550000012", env=env, input_text="y\n")
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    enriched = json.loads(
-                        (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
-                    )
-                    self.assertIn("5550000012", enriched["rows"])
+                    enriched = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
+                    self.assertIn(stored_key("5550000012"), enriched)
 
     def test_next_id_screens_human_on_h(self) -> None:
         """'shobr next <id>' answering h records a human review for it."""
@@ -4997,6 +5015,7 @@ class TestCLI(unittest.TestCase):
                         {
                             "scored_at": "2026-09-13T00:00:00+00:00",
                             "posting_id": "1234567890",
+                            "provider": "linkedin",
                             "kind": "ai_review",
                             "score": 4,
                             "reasoning": "fake ai review",
@@ -5453,6 +5472,7 @@ class TestCLI(unittest.TestCase):
                 {
                     "tailored_at": "2026-09-13T00:00:00+00:00",
                     "posting_id": "5550000022",
+                    "provider": "linkedin",
                     "slug": "testco-5550000022",
                     "app_dir": "/tmp/5550000022",
                     "rewrites": 0,
@@ -5488,10 +5508,10 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("Re-enrich it first?", result.stdout)
                     self.assertIn("1234567890", result.stdout)
-            rows = json.loads(
-                (data_home.shobr_data / "enrichment" / "enrichment.json").read_text()
-            )["rows"]
-            self.assertNotEqual(rows["1234567890"]["enriched_last_at"], "2026-09-13T00:00:00+00:00")
+            rows = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
+            self.assertNotEqual(
+                rows[stored_key("1234567890")]["enriched_last_at"], "2026-09-13T00:00:00+00:00"
+            )
 
     def test_next_declines_reenrich(self) -> None:
         """declining the re-enrich offer leaves the stale row untouched."""
@@ -5557,6 +5577,7 @@ class TestCLI(unittest.TestCase):
                         {
                             "scored_at": "2026-09-13T00:00:00+00:00",
                             "posting_id": "5550000011",
+                            "provider": "linkedin",
                             "kind": "ai_review",
                             "score": 4,
                             "reasoning": "fake ai review",
@@ -5655,6 +5676,7 @@ class TestCLI(unittest.TestCase):
                 {
                     "tailored_at": "2026-09-13T00:00:00+00:00",
                     "posting_id": "5550000034",
+                    "provider": "linkedin",
                     "slug": "testco-5550000034",
                     "app_dir": "/tmp/5550000034",
                     "rewrites": 0,

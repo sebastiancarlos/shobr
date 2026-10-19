@@ -1,16 +1,13 @@
 """The discovery stage: Obtaining job leads in bulk."""
 
-import re
 from collections import Counter
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, TypedDict, cast
-from urllib.parse import urlencode
 
 from .browser import beachmsg_json, capture_parse_failure
 from .color import BOLD, GREEN, RED, RESET
-from .config import Config, load_config, resolve_geo_ids
+from .config import Config
 from .core import (
-    LINKEDIN_BASE_URL,
     DataKind,
     LocationType,
     ShobrError,
@@ -26,7 +23,14 @@ from .core import (
     same_company_line,
     short_path,
     stage_line,
+    store_key,
     store_path,
+)
+from .providers.base import (
+    current_config,
+    current_provider,
+    get_provider,
+    row_provider,
 )
 
 if TYPE_CHECKING:
@@ -41,11 +45,14 @@ class JobRow(TypedDict):
     title: str
     company: str
     location: str
+    provider: str
 
 
 class DiscoveryQuery(TypedDict):
     """The search params behind one discovery fetch."""
 
+    provider: str
+    url: str
     titles: list[str]
     workplace_types: list[str]
     geo: list[str]
@@ -111,13 +118,24 @@ def _location_accepted(
 
 
 def base_reject_reason(
-    location: str, location_type: LocationType | None, title: str, filters: Config
+    location: str,
+    location_type: LocationType | None,
+    title: str,
+    filters: Config,
+    *,
+    has_location: bool = True,
 ) -> str | None:
-    """location + title pre-filter. First matching rule provides the reason."""
-    if not _location_accepted(location, location_type, filters["presence_locations"]):
+    """location + title pre-filter. First matching rule provides the reason.
+
+    Boards that never expose a posting location pass `has_location=False`,
+    which skips the location rule.
+    """
+    if has_location and not _location_accepted(
+        location, location_type, filters["presence_locations"]
+    ):
         return f"location '{location}' matches no location rule"
     title_lower = title.lower()
-    for label, pattern in filters["reject_title"]:
+    for label, pattern in filters["reject_title"].items():
         if pattern.search(title_lower):
             return f"title contains '{label}'"
     return None
@@ -128,15 +146,21 @@ def _reject_job(row: JobRow, filters: Config) -> str | None:
 
     First matching rule provides the reason.
     """
-    return base_reject_reason(row["location"], None, row["title"], filters)
+    return base_reject_reason(
+        row["location"],
+        None,
+        row["title"],
+        filters,
+        has_location=get_provider(row_provider(row)).has_location,
+    )
 
 
-def project_discovery() -> DiscoveredStore:
+def project_discovery(provider: str | None = None) -> DiscoveredStore:
     """Replay events.jsonl into the store shape (discovery.json)
 
     Walks the log, keeping, per posting_id, the first sighting and the most
     recent observed row. Repeats dedupe. Ordered newest-first by first
-    sighting.
+    sighting. `provider` filters the returned rows (None keeps every board).
     """
     if not (events := read_events(DataKind.DISCOVERY)):
         return {"fetched_at": None, "rows": []}
@@ -147,34 +171,38 @@ def project_discovery() -> DiscoveredStore:
 
     for raw in events:
         event: _DiscoverEvent = raw
-        for row in event["rows"]:
-            latest[row["posting_id"]] = row
-            first_seen.setdefault(row["posting_id"], event["fetched_at"])
-            last_seen[row["posting_id"]] = event["fetched_at"]
-            first_source.setdefault(row["posting_id"], event["source"])
+        for stored in event["rows"]:
+            row = cast(JobRow, {**stored, "provider": row_provider(stored)})
+            key = store_key(row["provider"], row["posting_id"])
+            latest[key] = row
+            first_seen.setdefault(key, event["fetched_at"])
+            last_seen[key] = event["fetched_at"]
+            first_source.setdefault(key, event["source"])
 
-    filters = load_config()
+    filters = current_config()
     cooldown_days = filters["reject_recent_application_days"]
-    companies = {pid: row["company"] for pid, row in latest.items()}
+    companies = {key: row["company"] for key, row in latest.items()}
     apps_by_company = applications_by_company(companies) if cooldown_days > 0 else {}
     rows: list[StoredJob] = []
-    for posting_id in latest:
-        rejected_reason = _reject_job(latest[posting_id], filters)
+    for key, row in latest.items():
+        if provider is not None and row["provider"] != provider:
+            continue
+        rejected_reason = _reject_job(row, filters)
         if rejected_reason is None:
             rejected_reason = cooldown_rejection_reason(
                 apps_by_company,
-                posting_id,
-                latest[posting_id]["company"],
-                last_seen[posting_id],
+                key,
+                row["company"],
+                last_seen[key],
                 cooldown_days,
             )
         rows.append(
             cast(
                 StoredJob,
                 {
-                    **latest[posting_id],
-                    "first_seen_at": first_seen[posting_id],
-                    "discovered_method": first_source[posting_id],
+                    **row,
+                    "first_seen_at": first_seen[key],
+                    "discovered_method": first_source[key],
                     "actionable": rejected_reason is None,
                     "rejected_reason": rejected_reason,
                 },
@@ -215,9 +243,9 @@ def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None =
             print(f"  - {row['posting_url']}")
             seen = datetime.fromisoformat(row["first_seen_at"]).date().isoformat()
             print(f"  - First Discovered At: {seen}")
-            if line := same_company_line(row["company"], row["posting_id"]):
+            if line := same_company_line(row["company"], row["provider"], row["posting_id"]):
                 print(line)
-            print(stage_line(row["posting_id"], DataKind.DISCOVERY))
+            print(stage_line(row["provider"], row["posting_id"], DataKind.DISCOVERY))
 
         reasons = Counter(
             row["rejected_reason"] for row in leads["rows"] if row["rejected_reason"] is not None
@@ -234,26 +262,14 @@ def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None =
 def discover_local() -> None:
     """Print the stored job leads summary without fetching."""
     require_events(DataKind.DISCOVERY)
-    leads = project_discovery()
+    leads = project_discovery(current_provider().name)
     _print_discovery_summary(leads)
-
-
-def _discovery_url(filters: Config) -> str:
-    """Build the search-results URL from the configured titles, types, and geos."""
-    params = {
-        "keywords": f"{' or '.join(filters['titles'])}, {' or '.join(filters['workplace_types'])}",
-        "origin": "PREFERENCES_LANDING",  # left here for "real user" signal
-    }
-    if geo_ids := resolve_geo_ids(filters):
-        params["geoId"] = ",".join(geo_ids)
-
-    jobs_search_path = "jobs/search-results"
-    return f"{LINKEDIN_BASE_URL}/{jobs_search_path}?{urlencode(params)}"
 
 
 def _print_search_params(filters: Config) -> None:
     """Print the search parameters a fetch is about to use."""
-    print(f"Performing LinkedIn job search with {BOLD}search parameters{RESET}:")
+    provider = current_provider()
+    print(f"Performing {provider.display_name} job search with {BOLD}search parameters{RESET}:")
     for label, values in (
         ("Titles", filters["titles"]),
         ("Workplace types", filters["workplace_types"]),
@@ -265,18 +281,19 @@ def _print_search_params(filters: Config) -> None:
 
 
 def discover() -> None:
-    """Fetch and store the jobs search-results page."""
-    filters = load_config()
+    """Fetch and store the current provider's jobs search-results page."""
+    provider = current_provider()
+    filters = current_config()
     _print_search_params(filters)
     print()
-    url = _discovery_url(filters)
-    raw = beachmsg_json("linkedin-job-search", url)
-    rows: list[JobRow] = raw["rows"]
+    url = provider.search_url(filters)
+    raw = beachmsg_json(provider.search_command, url)
+    rows: list[JobRow] = [cast(JobRow, {**row, "provider": provider.name}) for row in raw["rows"]]
     if not rows:
         capture_parse_failure("job-search", url, raw)
         raise ShobrError(
-            f"parsed 0 jobs from {url}; the LinkedIn jobs search page structure "
-            "may have changed, refusing to write an empty leads store"
+            f"parsed 0 jobs from {url}; the {provider.display_name} jobs search page "
+            "structure may have changed, refusing to write an empty leads store"
         )
 
     # persist event, reproject, and write the store
@@ -286,6 +303,8 @@ def discover() -> None:
         "source": {
             "type": "query",
             "query": {
+                "provider": provider.name,
+                "url": url,
                 "titles": filters["titles"],
                 "workplace_types": filters["workplace_types"],
                 "geo": filters["geo"],
@@ -293,55 +312,52 @@ def discover() -> None:
         },
         "rows": rows,
     }
+    # persist the event and reproject the store
     leads = persist_event(DataKind.DISCOVERY, new, project_discovery)
+    rowset = [row for row in leads["rows"] if row["provider"] == provider.name]
 
-    # report the whole projected leads store, tagging rows first seen on this pass.
-    _print_discovery_summary(leads, mark_new_from=leads["fetched_at"])
+    # report this provider's rows, tagging ones first seen on this pass.
+    _print_discovery_summary(
+        {"fetched_at": leads["fetched_at"], "rows": rowset},
+        mark_new_from=leads["fetched_at"],
+    )
     print(f"wrote to {short_path(store_path(DataKind.DISCOVERY))}")
-
-
-def _extract_posting_id(target: str) -> str:
-    """Posting id from a bare id or a LinkedIn jobs URL."""
-    if target.isdigit():
-        return target
-    for pattern in (r"/jobs/view/(?:[a-z-]*-)?(\d+)", r"currentJobId=(\d+)"):
-        if match := re.search(pattern, target):
-            return match.group(1)
-    raise ShobrError(f"could not extract a posting id from {target!r}")
 
 
 def discover_posting_id(target: str) -> None:
     """Fetch one posting by id or URL and record it as a manual lead + enrichment."""
     from .enrichment import build_enrichment_event, print_enriched_row, project_enrichment
 
-    posting_id = _extract_posting_id(target)
+    provider = current_provider()
+    posting_id = provider.extract_posting_id(target)
     if event_log(DataKind.DISCOVERY).exists():
-        known = {row["posting_id"] for row in project_discovery()["rows"]}
+        known = {row["posting_id"] for row in project_discovery(provider.name)["rows"]}
         if posting_id in known:
             raise ShobrError(
                 f"posting {posting_id} is already a known lead; "
                 f"fetch its detail with `shobr enrich {posting_id}`"
             )
-    nav_url = f"{LINKEDIN_BASE_URL}/jobs/view/{posting_id}"
-    detail = cast("JobDetailPayload", beachmsg_json("linkedin-job-detail", nav_url))
+    nav_url = provider.nav_url(posting_id, target)
+    detail = cast("JobDetailPayload", beachmsg_json(provider.detail_command, nav_url))
     title, company, location = (
         detail.get("title"),
         detail.get("company"),
         detail.get("location"),
     )
-    if not title or not company or not location or company == title:
+    if not title or not company or (provider.has_location and not location) or company == title:
         capture_parse_failure("job-detail", nav_url, detail, posting_id=posting_id)
         raise ShobrError(
             f"parsed no discovery-stage fields for posting {posting_id}; "
-            "the LinkedIn job detail page structure may have changed, "
+            f"the {provider.display_name} job detail page structure may have changed, "
             "refusing to record an incomplete lead"
         )
     lead: JobRow = {
         "posting_id": posting_id,
-        "posting_url": f"https://www.linkedin.com/jobs/view/{posting_id}",
+        "provider": provider.name,
+        "posting_url": provider.stored_url(target, posting_id),
         "title": title,
         "company": company,
-        "location": location,
+        "location": location or "",
     }
     fetched_at = datetime.now(UTC)
     discovery_event: _DiscoverEvent = {
@@ -353,7 +369,7 @@ def discover_posting_id(target: str) -> None:
     persist_event(DataKind.DISCOVERY, discovery_event, project_discovery)
     enriched = persist_event(DataKind.ENRICHMENT, enrichment_event, project_enrichment)
 
-    print_enriched_row(enriched["rows"][posting_id])
+    print_enriched_row(enriched["rows"][store_key(provider.name, posting_id)])
     print()
     print(f"wrote to {short_path(store_path(DataKind.DISCOVERY))}")
     print(f"wrote to {short_path(store_path(DataKind.ENRICHMENT))}")

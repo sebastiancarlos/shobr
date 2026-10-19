@@ -22,6 +22,7 @@ from .core import (
     same_company_line,
     short_path,
     stage_line,
+    store_key,
     store_path,
 )
 from .cv_toolchain import (
@@ -40,6 +41,7 @@ from .enrichment import (
     staleness_tag,
     validity_tag,
 )
+from .providers.base import current_provider, row_provider
 from .screening import (
     PROFILE_FILES,
     TAILOR_FILES,
@@ -61,6 +63,7 @@ class TailoringRow(TypedDict):
     """A posting's tailoring state as projected into tailoring.json."""
 
     posting_id: str
+    provider: str
     slug: str
     app_dir: str
     rewrites: int
@@ -74,7 +77,7 @@ class TailorEvent(TailoringRow):
 
 
 class TailoredStore(TypedDict):
-    """Projected packages keyed by posting id."""
+    """Projected packages keyed by provider/posting_id."""
 
     tailored_at: str | None
     rows: dict[str, TailoringRow]
@@ -92,15 +95,18 @@ def load_tailor_profile() -> TailoringProfile:
     return cast(TailoringProfile, load_files(PROFILE_FILES + TAILOR_FILES))
 
 
-def project_tailoring() -> TailoredStore:
+def project_tailoring(provider: str | None = None) -> TailoredStore:
     """Replay the tailoring events log."""
     if not (events := read_events(DataKind.TAILORING)):
         return {"tailored_at": None, "rows": {}}
     rows: dict[str, TailoringRow] = {}
-    for event in events:
-        pid = event["posting_id"]
-        rows[pid] = TailoringRow(
-            posting_id=pid,
+    for raw in events:
+        event = cast(TailorEvent, {**raw, "provider": row_provider(raw)})
+        if provider is not None and event["provider"] != provider:
+            continue
+        rows[store_key(event["provider"], event["posting_id"])] = TailoringRow(
+            posting_id=event["posting_id"],
+            provider=event["provider"],
             slug=event["slug"],
             app_dir=event["app_dir"],
             rewrites=event["rewrites"],
@@ -115,14 +121,14 @@ def print_tailored() -> None:
     """Print every tailored package stored so far."""
     with paged():
         require_events(DataKind.TAILORING)
-        tailored = project_tailoring()
+        tailored = project_tailoring(current_provider().name)
 
         print(f"{BLUE}{len(tailored['rows'])}{RESET} tailored")
         print()
         assert event_log(DataKind.ENRICHMENT).exists(), "tailoring data implies enrichment data"
-        enriched = project_enrichment()
+        enriched = project_enrichment(current_provider().name)
         for row in tailored["rows"].values():
-            eref = enriched["rows"][row["posting_id"]]
+            eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
             print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")
             print(f"  - Slug: {row['slug']}")
@@ -130,13 +136,13 @@ def print_tailored() -> None:
             print(
                 f"  - Rewrites: {GREEN if row['rewrites'] == 0 else YELLOW}{row['rewrites']}{RESET}"
             )
-            print(stage_line(row["posting_id"], DataKind.TAILORING))
+            print(stage_line(row["provider"], row["posting_id"], DataKind.TAILORING))
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
             threshold = load_config()["stale_after_days"]
             print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
             built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
             print(f"  - Tailored At: {built}")
-            if line := same_company_line(eref["company"], row["posting_id"]):
+            if line := same_company_line(eref["company"], eref["provider"], row["posting_id"]):
                 print(line)
 
         print()
@@ -199,6 +205,7 @@ def _record_package(
     event: TailorEvent = {
         "tailored_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "posting_id": row["posting_id"],
+        "provider": row["provider"],
         "slug": slug,
         "app_dir": app_dir,
         "rewrites": rewrites,
@@ -399,7 +406,12 @@ def _run_tailor_live(
     existing = notes_path.read_text(encoding="utf-8") if notes_path.exists() else ""
     if existing and not existing.endswith("\n"):
         existing += "\n"
-    snapshot = _notes_markdown(row, project_screening()["rows"].get(row["posting_id"]))
+    snapshot = _notes_markdown(
+        row,
+        project_screening(current_provider().name)["rows"].get(
+            store_key(row["provider"], row["posting_id"])
+        ),
+    )
     notes_path.write_text(f"{existing}\n{snapshot}", encoding="utf-8")
     commit(f"tailor {slug}: notes")
 
@@ -447,11 +459,11 @@ def oldest_tailorable(
     """Oldest pursue row with no package yet, still passing enrichment."""
     tailored_ids = set(tailored)
     for row in enriched:
-        sr = screened.get(row["posting_id"])
+        sr = screened.get(store_key(row["provider"], row["posting_id"]))
         if (
             sr is not None
             and sr["decision"] == ReviewDecision.PURSUE
-            and row["posting_id"] not in tailored_ids
+            and store_key(row["provider"], row["posting_id"]) not in tailored_ids
             and row["actionable"]
         ):
             return row
@@ -462,7 +474,9 @@ def tailor_next(print_prompt: bool, force: bool = False) -> None:
     """Build the package for the oldest pursue row with no package yet."""
     rows = get_enriched_rows()
     row = oldest_tailorable(
-        list(rows.values()), project_screening()["rows"], project_tailoring()["rows"]
+        list(rows.values()),
+        project_screening(current_provider().name)["rows"],
+        project_tailoring(current_provider().name)["rows"],
     )
     if row is None:
         print("nothing to tailor")
@@ -477,13 +491,14 @@ def tailor_all(force: bool = False) -> None:
     """
     rows = get_enriched_rows()
     threshold = load_config()["stale_after_days"]
-    screened = project_screening()["rows"]
+    screened = project_screening(current_provider().name)["rows"]
     pending = [
         row
         for row in rows.values()
-        if (sr := screened.get(row["posting_id"])) is not None
+        if (sr := screened.get(store_key(row["provider"], row["posting_id"]))) is not None
         and sr["decision"] == ReviewDecision.PURSUE
-        and row["posting_id"] not in project_tailoring()["rows"]
+        and store_key(row["provider"], row["posting_id"])
+        not in project_tailoring(current_provider().name)["rows"]
         and row["actionable"]
     ]
     skipped = sorted(row["posting_id"] for row in pending if not force and is_stale(row, threshold))
