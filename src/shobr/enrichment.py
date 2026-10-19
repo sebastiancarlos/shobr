@@ -41,7 +41,6 @@ from .providers.base import (
     current_config,
     current_provider,
     get_provider,
-    row_provider,
 )
 
 
@@ -110,7 +109,7 @@ def _reject_enriched(
         row["location_type"],
         row["title"],
         filters,
-        has_location=get_provider(row_provider(row)).has_location,
+        has_location=get_provider(row["provider"]).has_location,
     )
     if reason is not None:
         return reason
@@ -140,7 +139,7 @@ def project_enrichment(provider: str | None = None) -> EnrichedStore:
     latest: dict[str, EnrichmentEvent] = {}
 
     for raw in events:
-        event = cast(EnrichmentEvent, {**raw, "provider": row_provider(raw)})
+        event = cast(EnrichmentEvent, raw)
         latest[store_key(event["provider"], event["posting_id"])] = event
 
     filters = current_config()
@@ -291,7 +290,7 @@ def print_apply_block(row: EnrichedRow) -> None:
     """Print the apply-method block with external URL + board fallback."""
     if not row["apply_method"]:
         return
-    display_name = get_provider(row_provider(row)).display_name
+    display_name = get_provider(row["provider"]).display_name
     color = YELLOW if row["apply_method"] == "external" else BLUE
     suffix = ":" if row["apply_url"] else ""
     print(f"  - Apply ({color}{row['apply_method']}{RESET}){suffix}")
@@ -355,7 +354,7 @@ def build_enrichment_event(
     target: JobRow, detail: JobDetailPayload, fetched_at: datetime
 ) -> EnrichmentEvent:
     """Validate a fetched detail and build its event."""
-    provider = get_provider(row_provider(target))
+    provider = get_provider(target["provider"])
     job_description = _html_to_markdown(detail["job_description_html"])
     company_description = _html_to_markdown(detail["company_description_html"])
     try:

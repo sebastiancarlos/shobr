@@ -30,7 +30,6 @@ from .providers.base import (
     current_config,
     current_provider,
     get_provider,
-    row_provider,
 )
 
 if TYPE_CHECKING:
@@ -151,7 +150,7 @@ def _reject_job(row: JobRow, filters: Config) -> str | None:
         None,
         row["title"],
         filters,
-        has_location=get_provider(row_provider(row)).has_location,
+        has_location=get_provider(row["provider"]).has_location,
     )
 
 
@@ -172,7 +171,7 @@ def project_discovery(provider: str | None = None) -> DiscoveredStore:
     for raw in events:
         event: _DiscoverEvent = raw
         for stored in event["rows"]:
-            row = cast(JobRow, {**stored, "provider": row_provider(stored)})
+            row = cast(JobRow, stored)
             key = store_key(row["provider"], row["posting_id"])
             latest[key] = row
             first_seen.setdefault(key, event["fetched_at"])

@@ -28,7 +28,7 @@ from .enrichment import (
     validity_tag,
     warn_if_stale,
 )
-from .providers.base import current_provider, row_provider
+from .providers.base import current_provider
 from .screening import pill_line, print_screening_status, project_screening
 from .tailoring import TailoringRow, project_tailoring
 
@@ -86,7 +86,7 @@ def project_tracking(provider: str | None = None) -> TrackedStore:
     rows: dict[str, TrackedRow] = {}
     first: dict[str, str] = {}
     for raw in events:
-        event = cast(TrackEvent, {**raw, "provider": row_provider(raw)})
+        event = cast(TrackEvent, raw)
         if provider is not None and event["provider"] != provider:
             continue
         key = store_key(event["provider"], event["posting_id"])

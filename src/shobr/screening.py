@@ -40,7 +40,7 @@ from .enrichment import (
     staleness_tag,
     validity_tag,
 )
-from .providers.base import current_provider, row_provider
+from .providers.base import current_provider
 
 _PROFILE_DIR = SHOBR_CONFIG_DIR / "profile"
 
@@ -317,7 +317,7 @@ def project_screening(provider: str | None = None) -> _ScreenedStore:
     ai: dict[str, _AIReview] = {}
 
     for raw in events:
-        event = cast(_ScreeningReview, {**raw, "provider": row_provider(raw)})
+        event = cast(_ScreeningReview, raw)
         if provider is not None and event["provider"] != provider:
             continue
         key = store_key(event["provider"], event["posting_id"])
@@ -340,7 +340,7 @@ def project_screening(provider: str | None = None) -> _ScreenedStore:
         assert review is not None, "key came from human or ai"
         rows[key] = ScreeningRow(
             posting_id=review["posting_id"],
-            provider=row_provider(review),
+            provider=review["provider"],
             human=h,
             ai=a,
             decision=_screening_decision(h, a),

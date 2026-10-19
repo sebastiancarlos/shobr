@@ -41,7 +41,7 @@ from .enrichment import (
     staleness_tag,
     validity_tag,
 )
-from .providers.base import current_provider, row_provider
+from .providers.base import current_provider
 from .screening import (
     PROFILE_FILES,
     TAILOR_FILES,
@@ -101,7 +101,7 @@ def project_tailoring(provider: str | None = None) -> TailoredStore:
         return {"tailored_at": None, "rows": {}}
     rows: dict[str, TailoringRow] = {}
     for raw in events:
-        event = cast(TailorEvent, {**raw, "provider": row_provider(raw)})
+        event = cast(TailorEvent, raw)
         if provider is not None and event["provider"] != provider:
             continue
         rows[store_key(event["provider"], event["posting_id"])] = TailoringRow(

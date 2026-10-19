@@ -9,7 +9,6 @@ import functools
 import importlib
 import pkgutil
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ..config import Config, load_provider_config
@@ -106,11 +105,3 @@ def current_provider() -> Provider:
 def current_config() -> Config:
     """The config for the selected provider (top level plus overrides)."""
     return load_provider_config(current_provider().name)
-
-
-def row_provider(row: Mapping[str, object]) -> str:
-    """A stored row's provider; every row shobr writes carries one."""
-    value = row.get("provider")
-    if not isinstance(value, str) or not value:
-        raise ShobrError(f"row for posting {row.get('posting_id')!r} has no provider")
-    return value
