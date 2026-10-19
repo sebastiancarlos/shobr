@@ -909,6 +909,16 @@ class TestCLI(unittest.TestCase):
         result = shobr("--version")
         self.assertEqual(result.returncode, 0)
 
+    def test_provider_flag_before_and_after_command(self) -> None:
+        """--provider is accepted before the command name as well as after it."""
+        with TestDataHome() as data_home:
+            env = data_home.env
+            after = shobr("status", "--provider", DEFAULT_PROVIDER, env=env)
+            before = shobr("--provider", DEFAULT_PROVIDER, "status", env=env)
+            self.assertEqual(after.returncode, 0, after.stderr)
+            self.assertEqual(before.returncode, 0, before.stderr)
+            self.assertEqual(before.stdout, after.stdout)
+
     def test_setup_installs_commands(self) -> None:
         """setup symlinks the JS commands into a temporary XDG commands
         home (and scaffolds the profile); a second run keeps everything."""

@@ -55,16 +55,22 @@ def _force_arg(subparser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return subparser
 
 
-def _provider_arg(subparser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    """Add a --provider flag (LinkedIn by default)."""
-    subparser.add_argument(
+def _provider_arg(target: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add a --provider flag (LinkedIn by default).
+
+    Accepted both before the command (on the top-level parser) and after it (on
+    the subcommand parser). The default is suppressed because a subparser
+    parses into a fresh namespace and copies it back verbatim, which would
+    otherwise clobber a `--provider` given before the command.
+    """
+    target.add_argument(
         "--provider",
-        default=DEFAULT_PROVIDER,
+        default=argparse.SUPPRESS,
         choices=sorted(all_providers()),
         metavar="NAME",
         help=f"job board provider (default: {DEFAULT_PROVIDER})",
     )
-    return subparser
+    return target
 
 
 def main() -> None:
@@ -75,6 +81,7 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(prog="shobr", suggest_on_error=True)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    _provider_arg(parser)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     for name, help_text in [
