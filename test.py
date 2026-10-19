@@ -45,7 +45,7 @@ def _search_page(*cards: tuple[str, str, str, str]) -> str:
     """Minimal synthetic search-results page for one-off enrich tests.
 
     Each card is (posting_id, title, company, location); the page carries
-    only the hooks job-search.js depends on.
+    only the hooks linkedin-job-search.js depends on.
     """
     rows = "".join(
         f'<div componentkey="job-card-component-ref-{pid}">'

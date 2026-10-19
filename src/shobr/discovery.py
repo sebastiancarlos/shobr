@@ -270,7 +270,7 @@ def discover() -> None:
     _print_search_params(filters)
     print()
     url = _discovery_url(filters)
-    raw = beachmsg_json("job-search", url)
+    raw = beachmsg_json("linkedin-job-search", url)
     rows: list[JobRow] = raw["rows"]
     if not rows:
         capture_parse_failure("job-search", url, raw)
@@ -323,7 +323,7 @@ def discover_posting_id(target: str) -> None:
                 f"fetch its detail with `shobr enrich {posting_id}`"
             )
     nav_url = f"{LINKEDIN_BASE_URL}/jobs/view/{posting_id}"
-    detail = cast("JobDetailPayload", beachmsg_json("job-detail", nav_url))
+    detail = cast("JobDetailPayload", beachmsg_json("linkedin-job-detail", nav_url))
     title, company, location = (
         detail.get("title"),
         detail.get("company"),

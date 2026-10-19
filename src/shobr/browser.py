@@ -24,7 +24,12 @@ BEACHPATROL_COMMANDS_LOCAL_DIR = Path(__file__).resolve().parent / "beachpatrol-
 
 
 def commands_install() -> None:
-    """Symlink beachpatrol-commands/*.js into the beachpatrol user commands home."""
+    """Symlink every beachpatrol-commands/*.js into the user commands home.
+
+    Commands are prefixed with their provider (for example
+    `linkedin-job-search.js`), so several providers can be installed side by
+    side.
+    """
     BEACHPATROL_COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
     sources = sorted(BEACHPATROL_COMMANDS_LOCAL_DIR.glob("*.js"))
     if not sources:

@@ -383,7 +383,7 @@ def build_enrichment_event(
 def _enrich_one(target: StoredJob) -> None:
     """Fetch and persist the detail for a single known lead."""
     nav_url = f"{LINKEDIN_BASE_URL}/jobs/view/{target['posting_id']}"
-    payload = cast(JobDetailPayload, beachmsg_json("job-detail", nav_url))
+    payload = cast(JobDetailPayload, beachmsg_json("linkedin-job-detail", nav_url))
     row = build_enrichment_event(target, payload, datetime.now(UTC))
     enriched = persist_event(DataKind.ENRICHMENT, row, project_enrichment)
 

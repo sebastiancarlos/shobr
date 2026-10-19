@@ -188,7 +188,7 @@ def notifications() -> None:
     """Parse the rendered notifications page into structured rows."""
     # scrape latest notifications
     url = f"{LINKEDIN_BASE_URL}/notifications"
-    raw = beachmsg_json("notifications", url)
+    raw = beachmsg_json("linkedin-notifications", url)
     rows: list[NotificationRow] = raw["rows"]
     if not rows:
         capture_parse_failure("notifications", url, raw)
