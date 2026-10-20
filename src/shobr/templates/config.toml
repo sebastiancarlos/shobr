@@ -50,7 +50,8 @@ stale_after_days = 2
 testville-city = "111111111"
 testville-dept = "222222222"
 
-# Reject titles which match the provided Python regex (matched in lowercase).
+# Reject titles which match the provided Python regex (matched in lowercase,
+# with accents folded).
 [reject_title]
 golang = "\\bgolang\\b"
 devops = "\\bdevops\\b"

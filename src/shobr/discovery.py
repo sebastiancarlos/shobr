@@ -15,6 +15,7 @@ from .core import (
     company_label,
     cooldown_rejection_reason,
     event_log,
+    fold_accents,
     paged,
     persist_event,
     read_events,
@@ -134,7 +135,7 @@ def base_reject_reason(
         location, location_type, filters["presence_locations"]
     ):
         return f"location '{location}' matches no location rule"
-    title_lower = title.lower()
+    title_lower = fold_accents(title.lower())
     for label, pattern in filters["reject_title"].items():
         if pattern.search(title_lower):
             return f"title contains '{label}'"

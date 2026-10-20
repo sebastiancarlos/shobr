@@ -12,6 +12,7 @@ from .core import (
     EmploymentType,
     LocationType,
     ShobrError,
+    fold_accents,
     get_template,
     short_path,
 )
@@ -134,7 +135,7 @@ def _parse_config(data: dict) -> Config:
         if not isinstance(pattern, str) or not pattern:
             raise ShobrError(f"config.toml: title {label!r} needs a non-empty pattern")
         try:
-            reject_title[label] = re.compile(pattern)
+            reject_title[label] = re.compile(fold_accents(pattern))
         except re.error as exc:
             raise ShobrError(f"config.toml: bad regex for title {label!r}: {exc}") from exc
 

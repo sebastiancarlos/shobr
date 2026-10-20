@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime
 from enum import StrEnum
@@ -71,6 +72,13 @@ def short_path(path: Path | str) -> str:
     if text.startswith(home + "/"):
         return f"~{text[len(home) :]}"
     return text
+
+
+def fold_accents(text: str) -> str:
+    """Strip combining marks so accented and unaccented spellings compare equal."""
+    return "".join(
+        char for char in unicodedata.normalize("NFD", text) if not unicodedata.combining(char)
+    )
 
 
 class DataKind(StrEnum):
