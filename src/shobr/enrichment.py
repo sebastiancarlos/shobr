@@ -24,6 +24,7 @@ from .core import (
     reasons_line,
     rejected_tag,
     require_events,
+    row_header,
     same_company_line,
     short_path,
     stage_line,
@@ -326,9 +327,10 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     if not row["actionable"]:
         assert row["rejected_reason"] is not None
         tag = rejected_tag(row["rejected_reason"])
-    print(f"[{row['company']}] {row['posting_id']}{tag}")
+    print(f"{row_header(row)}{tag}")
     print(f"  - {row['title']}")
-    print(f"  - {row['location']}")
+    if row["location"]:
+        print(f"  - {row['location']}")
     for label, value in (
         ("Location type", row["location_type"]),
         ("Employment type", row["employment_type"]),

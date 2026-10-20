@@ -26,6 +26,7 @@ class Provider(ABC):
     display_name: str
     supports_tailoring: bool
     has_location: bool
+    has_company: bool = True
     has_notifications: bool = False
 
     @property

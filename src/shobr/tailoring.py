@@ -19,6 +19,7 @@ from .core import (
     read_events,
     render_template,
     require_events,
+    row_header,
     same_company_line,
     short_path,
     stage_line,
@@ -129,7 +130,7 @@ def print_tailored() -> None:
         enriched = project_enrichment(current_provider().name)
         for row in tailored["rows"].values():
             eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
-            print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}{validity_tag(eref)}")
+            print(f"{BOLD}{row_header(eref)}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")
             print(f"  - Slug: {row['slug']}")
             print(f"  - {BOLD}Application dir:{RESET} {short_path(row['app_dir'])}")
@@ -343,10 +344,7 @@ def _run_tailor_live(
         raise ShobrError("could not parse a valid reply from the LLM; no package recorded")
 
     # Have LLM create tailored resume
-    print(
-        f"Sent tailor-edits request for lead {BOLD}[{row['company']}] "
-        f"{row['posting_id']} ({row['title']}){RESET}."
-    )
+    print(f"Sent tailor-edits request for lead {BOLD}{row_header(row)} ({row['title']}){RESET}.")
     print("Waiting for response...")
     edits_text = chat_completion(_tailor_edits_prompt(row, profile), max_tokens=TAILOR_MAX_TOKENS)
     verified_md = _parse_md_reply(edits_text, "resume_md")

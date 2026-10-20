@@ -13,7 +13,8 @@ cv_toolchain_dir = "~/shobr-resumes"
 # beachpatrol browser to use: "chromium" or "firefox".
 beachpatrol_browser = "chromium"
 
-# Job titles fed to LinkedIn search as an ORed keyword query.
+# Job titles fed to the search as an ORed keyword query. An empty list means
+# no keyword search: boards which support a plain listing then fetch it all.
 titles = ["Technical Lead", "Software Engineer", "Senior Software Engineer"]
 
 # Workplace types appended to the same search OR query.

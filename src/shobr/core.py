@@ -10,7 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -209,7 +209,8 @@ def applications_by_company(companies: dict[str, str]) -> dict[str, dict[str, st
     Callers pass a {store_key: company} map, so this never touches the
     enrichment store (which would recurse from inside the projections that call
     it). Every board's tracking is considered, so a same-company application is
-    found across providers. Withdrawn pids are not considered.
+    found across providers. Withdrawn pids are not considered, and neither are
+    empty companies.
     """
     from .tracking import TrackStatus, project_tracking
 
@@ -221,7 +222,8 @@ def applications_by_company(companies: dict[str, str]) -> dict[str, dict[str, st
             continue
         if pid not in companies:
             continue
-        apps_by_company.setdefault(companies[pid], {})[pid] = row["first_tracked_at"]
+        if company := companies[pid]:
+            apps_by_company.setdefault(company, {})[pid] = row["first_tracked_at"]
     return apps_by_company
 
 
@@ -235,8 +237,11 @@ def cooldown_rejection_reason(
     """Reject a lead with a recent same-company application in `apps_by_company`.
 
     `last_seen` is the lead's last observation time, which is the time to be
-    compared to any same-company application's time.
+    compared to any same-company application's time. An empty company is never
+    a match.
     """
+    if not company:
+        return None
     apps = apps_by_company.get(company, {})
     if days <= 0 or key in apps:
         return None
@@ -256,6 +261,8 @@ def same_company_line(
     on any board, excluding the `(provider, posting_id)` itself. With `plain`,
     markdown without ANSI (for the $EDITOR template).
     """
+    if not company:
+        return None
     if not event_log(DataKind.ENRICHMENT).exists():
         return None
     from .enrichment import project_enrichment
@@ -272,6 +279,20 @@ def same_company_line(
     if plain:
         return f"- Last Applied To Same Company: {date} ({other_id})"
     return f"  - {YELLOW}Last Applied To Same Company:{RESET} {date} ({other_id})"
+
+
+def company_label(row: Mapping[str, object]) -> str:
+    """The employer name for display, or the posting id when there is none."""
+    if isinstance(company := row["company"], str) and company:
+        return company
+    return str(row["posting_id"])
+
+
+def row_header(row: Mapping[str, object]) -> str:
+    """The `[company] id` header for a listing, or just `[id]` with no company."""
+    if isinstance(company := row["company"], str) and company:
+        return f"[{company}] {row['posting_id']}"
+    return f"[{row['posting_id']}]"
 
 
 def rejected_tag(reason: str) -> str:

@@ -46,5 +46,6 @@ PROVIDER = LinkedInProvider(
     display_name="LinkedIn",
     supports_tailoring=True,
     has_location=True,
+    has_company=True,
     has_notifications=True,
 )

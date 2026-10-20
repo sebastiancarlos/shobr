@@ -41,7 +41,7 @@ _KNOWN_CONFIG_KEYS = frozenset(Config.__annotations__)
 _OVERRIDABLE_KEYS = _KNOWN_CONFIG_KEYS - {"providers"}
 
 
-def _str_list(data: dict, key: str, *, required: bool = False) -> list[str]:
+def _str_list(data: dict, key: str, *, required: bool = False, non_empty: bool = True) -> list[str]:
     """Parse a key from config.toml which should be a list of strings."""
     if key not in data:
         if required:
@@ -52,7 +52,7 @@ def _str_list(data: dict, key: str, *, required: bool = False) -> list[str]:
         isinstance(value, str) and value for value in values
     ):
         raise ShobrError(f"config.toml: '{key}' must be a list of non-empty strings")
-    if required and not values:
+    if non_empty and not values:
         raise ShobrError(f"config.toml: '{key}' must not be empty")
     return values
 
@@ -96,7 +96,7 @@ def _parse_config(data: dict) -> Config:
             f"(known: {', '.join(sorted(_KNOWN_CONFIG_KEYS))})."
         )
 
-    titles = _str_list(data, "titles", required=True)
+    titles = _str_list(data, "titles", required=True, non_empty=False)
     workplace_types = _str_list(data, "workplace_types", required=True)
     _check_known(
         workplace_types,

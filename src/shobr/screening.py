@@ -24,6 +24,7 @@ from .core import (
     read_events,
     render_template,
     require_events,
+    row_header,
     same_company_line,
     short_path,
     stage_line,
@@ -180,11 +181,12 @@ def pill_line(row: EnrichedRow) -> str:
 
 def job_posting_block(row: EnrichedRow) -> str:
     """The shared JOB POSTING document block."""
+    pills = pill_line(row)
     return render_template(
         "block-job-posting.md",
         title=row["title"],
-        company=row["company"],
-        pills=pill_line(row),
+        at_company=f" at {row['company']}" if row["company"] else "",
+        pills_clause=f" ({pills})" if pills else "",
         job_description=row["job_description"],
         company_description=row["company_description"],
     )
@@ -459,7 +461,7 @@ def print_screened(score_filter: str | None = None) -> None:
         enriched = project_enrichment(current_provider().name)
         for row in rows:
             eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
-            print(f"[{eref['company']}] {row['posting_id']}{validity_tag(eref)}")
+            print(f"{row_header(eref)}{validity_tag(eref)}")
             pills = pill_line(eref)
             print(f"  - {eref['title']}")
             if pills:
@@ -571,10 +573,10 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
     company_line = (
         same_company_line(row["company"], row["provider"], row["posting_id"], plain=True) or ""
     )
+    heading = f"{row['company']} ({row['posting_id']})" if row["company"] else row["posting_id"]
     return render_template(
         "editor-screening.md",
-        company=row["company"],
-        posting_id=row["posting_id"],
+        heading=heading,
         title=row["title"],
         pills=pills,
         checked=checked,
@@ -709,10 +711,7 @@ def _run_llm_for_row(row: EnrichedRow, print_prompt: bool, force: bool = False) 
         print(prompt)
         return
     refuse_if_stale(row, load_config()["stale_after_days"], force)
-    print(
-        f"Sent AI review request for lead {BOLD}[{row['company']}] "
-        f"{row['posting_id']} ({row['title']}){RESET}."
-    )
+    print(f"Sent AI review request for lead {BOLD}{row_header(row)} ({row['title']}){RESET}.")
     print("Waiting for response...")
     parsed = _parse_ai_reply(chat_completion(prompt))
     if parsed is None:

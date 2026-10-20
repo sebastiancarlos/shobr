@@ -2,7 +2,7 @@
 
 ## Job Details
 
-- {company} ({posting_id})
+- {heading}
 - {title}
 - {pills}
 - Last Enriched At: {checked}{stale}

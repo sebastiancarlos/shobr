@@ -12,6 +12,7 @@ from .core import (
     LocationType,
     ShobrError,
     applications_by_company,
+    company_label,
     cooldown_rejection_reason,
     event_log,
     paged,
@@ -236,9 +237,10 @@ def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None =
             if not row["actionable"]:
                 assert row["rejected_reason"] is not None
                 tag += rejected_tag(row["rejected_reason"])
-            print(f"[{row['company']}]{tag}")
+            print(f"[{company_label(row)}]{tag}")
             print(f"  - {row['title']}")
-            print(f"  - {row['location']}")
+            if row["location"]:
+                print(f"  - {row['location']}")
             print(f"  - {row['posting_url']}")
             seen = datetime.fromisoformat(row["first_seen_at"]).date().isoformat()
             print(f"  - First Discovered At: {seen}")
@@ -343,7 +345,12 @@ def discover_posting_id(target: str) -> None:
         detail.get("company"),
         detail.get("location"),
     )
-    if not title or not company or (provider.has_location and not location) or company == title:
+    if (
+        not title
+        or (provider.has_company and not company)
+        or (provider.has_location and not location)
+        or (provider.has_company and company == title)
+    ):
         capture_parse_failure("job-detail", nav_url, detail, posting_id=posting_id)
         raise ShobrError(
             f"parsed no discovery-stage fields for posting {posting_id}; "
@@ -355,7 +362,7 @@ def discover_posting_id(target: str) -> None:
         "provider": provider.name,
         "posting_url": provider.stored_url(target, posting_id),
         "title": title,
-        "company": company,
+        "company": company or "",
         "location": location or "",
     }
     fetched_at = datetime.now(UTC)

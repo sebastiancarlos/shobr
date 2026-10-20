@@ -1838,6 +1838,22 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("- recent application at same company x1", result.stdout)
 
+    def test_config_allows_empty_titles(self) -> None:
+        """An empty titles list is valid, at the top level and as an override."""
+        empty_top_level = CONFIG_DEFAULT.replace(
+            'titles = ["Technical Lead", "Software Engineer", "Senior Software Engineer"]',
+            "titles = []",
+        )
+        with TestDataHome() as data_home:
+            seed_test_config(data_home, empty_top_level)
+            result = shobr("status", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+        with TestDataHome() as data_home:
+            seed_test_config(data_home, CONFIG_DEFAULT + "\n[providers.linkedin]\ntitles = []\n")
+            result = shobr("--provider", "linkedin", "status", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_cooldown_config_validation(self) -> None:
         """reject_recent_application_days rejects non-integer, bool, and negative."""
         for raw in ('"x"', "true", "-1"):

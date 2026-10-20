@@ -14,6 +14,7 @@ from .core import (
     persist_event,
     read_events,
     require_events,
+    row_header,
     same_company_line,
     short_path,
     store_key,
@@ -174,7 +175,7 @@ def print_tracked() -> None:
         enriched = project_enrichment(current_provider().name)
         for row in tracked["rows"].values():
             eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
-            print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}{validity_tag(eref)}")
+            print(f"{BOLD}{row_header(eref)}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")
             color = TRACK_STATUS_COLORS[row["status"]]
             print(f"  - Status: {color}{str(row['status']).upper()}{RESET}")
@@ -196,7 +197,7 @@ def _print_review(row: TailoringRow) -> None:
         eref = rows.get(store_key(row["provider"], row["posting_id"]))
         if eref is None:
             raise ShobrError(f"posting {row['posting_id']} not found in enrichment store")
-        print(f"[{eref['company']}] {row['posting_id']}{validity_tag(eref)}")
+        print(f"{row_header(eref)}{validity_tag(eref)}")
         print(f"  - {eref['title']}")
         checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
         threshold = load_config()["stale_after_days"]
