@@ -554,8 +554,9 @@ def labeled_block(label: str, text: str, width: int = 80) -> str:
 
 
 def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
-    """The $EDITOR screeing template."""
+    """The $EDITOR screening template."""
     pills = pill_line(row)
+    pills_line = f"\n- {pills}" if pills else ""
     apply_lines = f"- Apply ({row['apply_method']}):"
     if row["apply_url"]:
         apply_lines += f"\n  - <{row['apply_url']}>"
@@ -567,6 +568,12 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
 - Score: {ai["score"]}
 {labeled_block("- Reasoning:", ai["reasoning"])}
 """
+    sections: list[str] = []
+    if job_description := row["job_description"].strip():
+        sections.append(f"## Job Description\n\n{job_description}")
+    if company_description := row["company_description"].strip():
+        sections.append(f"## Company Description\n\n{company_description}")
+    description_sections = "\n\n".join(sections)
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
     threshold = load_config()["stale_after_days"]
     company_line = (
@@ -577,14 +584,13 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
         "editor-screening.md",
         heading=heading,
         title=row["title"],
-        pills=pills,
+        pills_line=pills_line,
         checked=checked,
         stale=staleness_tag(row, threshold),
         apply_lines=apply_lines,
         company_line=company_line,
         ai_lines=ai_lines,
-        job_description=row["job_description"],
-        company_description=row["company_description"],
+        description_sections=description_sections,
     )
 
 
