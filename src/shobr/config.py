@@ -31,6 +31,8 @@ class Config(TypedDict):
     presence_locations: list[str]
     reject_employment_type: list[str]
     cv_toolchain_dir: str
+    profile_dir: str
+    main_cv_path: str | None
     beachpatrol_profile: str | None
     beachpatrol_browser: str
     stale_after_days: int
@@ -153,6 +155,12 @@ def _parse_config(data: dict) -> Config:
     raw_dir = data.get("cv_toolchain_dir")
     if not isinstance(raw_dir, str) or not raw_dir:
         raise ShobrError("config.toml: 'cv_toolchain_dir' must be a non-empty string")
+    raw_profile_dir = data.get("profile_dir", str(SHOBR_CONFIG_DIR / "profile"))
+    if not isinstance(raw_profile_dir, str) or not raw_profile_dir:
+        raise ShobrError("config.toml: 'profile_dir' must be a non-empty string")
+    raw_main_cv = data.get("main_cv_path")
+    if raw_main_cv is not None and (not isinstance(raw_main_cv, str) or not raw_main_cv):
+        raise ShobrError("config.toml: 'main_cv_path' must be a non-empty string")
     raw_profile = data.get("beachpatrol_profile")
     if raw_profile is not None and (not isinstance(raw_profile, str) or not raw_profile):
         raise ShobrError("config.toml: 'beachpatrol_profile' must be a non-empty string")
@@ -188,6 +196,8 @@ def _parse_config(data: dict) -> Config:
         "presence_locations": presence_locations,
         "reject_employment_type": reject_employment_type,
         "cv_toolchain_dir": raw_dir,
+        "profile_dir": raw_profile_dir,
+        "main_cv_path": raw_main_cv,
         "beachpatrol_profile": raw_profile,
         "beachpatrol_browser": raw_browser,
         "stale_after_days": raw_stale,
@@ -222,11 +232,39 @@ def provider_options(name: str) -> dict[str, object]:
     return cast(dict[str, object], load_config()["providers"].get(name, {}))
 
 
+def _resolve_path(value: str) -> Path:
+    """Expand ~ and resolve relative paths against the shobr config dir."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else SHOBR_CONFIG_DIR / path
+
+
+def resolve_profile_dir() -> Path:
+    """Resolve the profile docs directory (provider config over the default)."""
+    if not CONFIG_PATH.is_file():
+        return SHOBR_CONFIG_DIR / "profile"
+    from .providers.base import current_config
+
+    return _resolve_path(current_config()["profile_dir"])
+
+
+def resolve_main_cv_path() -> Path:
+    """Resolve the main CV (env, provider config, then toolchain/resume.md)."""
+    if env_path := os.environ.get("SHOBR_MAIN_CV_PATH"):
+        return _resolve_path(env_path)
+    from .providers.base import current_config
+
+    if configured := current_config()["main_cv_path"]:
+        return _resolve_path(configured)
+    return resolve_cv_toolchain_dir() / "resume.md"
+
+
 def resolve_cv_toolchain_dir() -> Path:
-    """Resolve the CV toolchain dir (env wins, else the config file)."""
+    """Resolve the CV toolchain dir (env wins, else provider-aware config)."""
     if env_dir := os.environ.get("SHOBR_CV_TOOLCHAIN_DIR"):
-        return Path(env_dir).expanduser()
-    return Path(load_config()["cv_toolchain_dir"]).expanduser()
+        return _resolve_path(env_dir)
+    from .providers.base import current_config
+
+    return _resolve_path(current_config()["cv_toolchain_dir"])
 
 
 def resolve_geo_ids(filters: Config) -> list[str]:

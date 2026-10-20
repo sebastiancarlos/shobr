@@ -6,6 +6,13 @@
 # CV Toolchain home
 cv_toolchain_dir = "~/shobr-resumes"
 
+# Profile documents directory (default: <config dir>/profile).
+# profile_dir = "~/.config/shobr/profile"
+
+# Explicit main CV used as the tailoring base. Defaults to
+# <cv_toolchain_dir>/resume.md.
+# main_cv_path = "~/shobr-resumes/resume.md"
+
 # beachpatrol browser profile holding the logged-in LinkedIn session.
 # The user MUST configure this.
 # beachpatrol_profile = "job-hunter"

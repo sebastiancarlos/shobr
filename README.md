@@ -120,7 +120,7 @@ Then, in order:
      `config.toml` at an existing checkout). This folder will keep track of
      all your resume variation inputs (markdown) and outputs (PDFs).
    - Then, the _main CV_ defaults to `<cv_toolchain_dir>/resume.md`
-     (`SHOBR_MAIN_CV_PATH` overrides).
+     (`SHOBR_MAIN_CV_PATH` or a `main_cv_path` config overrides).
 
 ## SHOBR Pipeline & CLI Commands
 
@@ -251,6 +251,9 @@ profile/
   resume-guide.md cover-guide.md                    # tailor-only inputs
 ```
 
+The profile folder defaults to `$XDG_CONFIG_HOME/shobr/profile` and can be
+relocated with the `profile_dir` config.
+
 ### [`config.toml`](src/shobr/templates/config.toml)
 
 #### `cv_toolchain_dir` (required)
@@ -260,9 +263,25 @@ cv_toolchain_dir = "~/shobr-resumes"
 ```
 
 Home of the _CV toolchain_ (a `roffume` git checkout). The _main resume_
-defaults to `<cv_toolchain_dir>/resume.md`. The _CV toolchain_ directory will
-ultimately contain all the generated CVs and other data, in its internal
-"per-application" directories.
+defaults to `<cv_toolchain_dir>/resume.md` (but can be configured with
+`main_cv_path`). The _CV toolchain_ directory will ultimately contain all the
+generated CVs and other data, in its internal "per-application" directories.
+
+#### `profile_dir` (optional, default `$XDG_CONFIG_HOME/shobr/profile`)
+
+```toml
+profile_dir = "~/.config/shobr/profile"
+```
+
+Custom directory holding the profile markdown files.
+
+#### `main_cv_path` (optional, default `<cv_toolchain_dir>/resume.md`)
+
+```toml
+main_cv_path = "~/shobr-resumes/resume.md"
+```
+
+Custom path to the main CV.
 
 #### `beachpatrol_profile` (required)
 
@@ -375,6 +394,17 @@ devops = "\\bdevops\\b"
 Filters by pre-filter. Matched against job title. The leads are rejected with
 reason `title contains '<label>'`.
 
+#### `[providers.<name>]` (optional)
+
+While only LinkedIn has built-in support, a custom job board _provider_ can be
+added by hacking away at the code. The interface to do so is quite
+straigthforward (defined at `src/shobr/providers/base.py`). If you do add
+another provider, you can override global configuration for it with the
+`[providers.<name>]` TOML form.
+
+Also, every CLI command supports the `--provider <name>` flag to define which
+provider to act upon (defaulting to Linkedin otherwise).
+
 ### `profile/*.md` and the Main CV
 
 The LLM stages read your profile as plain markdown files. Initialize the
@@ -382,8 +412,9 @@ profile templates with `shobr setup`, and then fill the files yourself.
 
 #### The main CV
 
-Your main CV, used as a base to generate tailored CVs. Referred by either
-`SHOBR_MAIN_CV_PATH` or `<cv_toolchain_dir>/resume.md`.
+Your main CV, used as a base to screen and generate tailored CVs. Resolved by:
+`SHOBR_MAIN_CV_PATH`, the `main_cv_path` config, then
+`<cv_toolchain_dir>/resume.md`.
 
 #### [`profile/user-detail.md`](src/shobr/templates/profile-user-detail.md)
 
@@ -422,7 +453,7 @@ forking-and-hacking).
 
 ```text
 <cv_toolchain_dir>/        # default: ~/shobr-resumes
-  resume.md                # main resume (unless pointed elsewhere by SHOBR_MAIN_CV_PATH)
+  resume.md                # default main resume (see main_cv_path)
   resume.pdf               # built main resume
   applications/<slug>/     # one per tailored posting
     resume.md              # tailored resume (rewritten until it fits one page)

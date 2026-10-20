@@ -181,12 +181,14 @@ def _tailor_rewrite_prompt(overflowing_md: str, verify_output: str) -> str:
 
 
 def application_slug(row: EnrichedRow) -> str:
-    """Deterministic application dir slug: slugged company + posting id."""
+    """Deterministic application dir slug: company or provider, plus posting id."""
     company = "-".join(
         part
         for part in "".join(c if c.isalnum() else " " for c in row["company"].lower()).split()
         if part
     )
+    if not company:
+        return f"{row['provider']}-{row['posting_id']}"
     return f"{company}-{row['posting_id']}"
 
 

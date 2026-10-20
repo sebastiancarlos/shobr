@@ -12,9 +12,14 @@ from typing import Literal, TypedDict, cast
 
 from .ai import chat_completion, parse_json_object
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
-from .config import CONFIG_PATH, load_config, scaffold_config
+from .config import (
+    CONFIG_PATH,
+    load_config,
+    resolve_main_cv_path,
+    resolve_profile_dir,
+    scaffold_config,
+)
 from .core import (
-    SHOBR_CONFIG_DIR,
     DataKind,
     ShobrError,
     event_log,
@@ -43,16 +48,6 @@ from .enrichment import (
 )
 from .providers.base import current_provider
 
-_PROFILE_DIR = SHOBR_CONFIG_DIR / "profile"
-
-
-def _resolve_cv_path() -> Path:
-    """Master resume path: $SHOBR_MAIN_CV_PATH wins, else <cv_toolchain_dir>/resume.md."""
-    if env_path := os.environ.get("SHOBR_MAIN_CV_PATH"):
-        return Path(env_path).expanduser()
-    return Path(load_config()["cv_toolchain_dir"]).expanduser() / "resume.md"
-
-
 _PROFILE_TEMPLATE_SENTINEL = "SHOBR PROFILE TEMPLATE"
 
 _PROFILE_TEMPLATES: dict[str, str] = {
@@ -76,13 +71,14 @@ _PROFILE_TEMPLATES: dict[str, str] = {
 
 def init_profile() -> None:
     """Scaffold instructional profile .md templates, keeping existing files."""
-    _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    profile_dir = resolve_profile_dir()
+    profile_dir.mkdir(parents=True, exist_ok=True)
     width = max(
         len(short_path(path))
-        for path in [CONFIG_PATH, *(_PROFILE_DIR / f for f in _PROFILE_TEMPLATES)]
+        for path in [CONFIG_PATH, *(profile_dir / f for f in _PROFILE_TEMPLATES)]
     )
     for filename, content in _PROFILE_TEMPLATES.items():
-        path = _PROFILE_DIR / filename
+        path = profile_dir / filename
         if path.exists():
             print(f"skip {short_path(path).ljust(width)} {GREEN}(already exists){RESET}")
             continue
@@ -108,10 +104,12 @@ TAILOR_FILES: tuple[str, str] = (
 
 def print_profile() -> None:
     """Print the profile input paths shobr reads, flagging missing files."""
+    profile_dir = resolve_profile_dir()
+    tailor_files = TAILOR_FILES if current_provider().supports_tailoring else ()
     entries = (
-        [("CV", _resolve_cv_path())]
-        + [(filename, _PROFILE_DIR / filename) for filename in PROFILE_FILES]
-        + [(filename, _PROFILE_DIR / filename) for filename in TAILOR_FILES]
+        [("CV", resolve_main_cv_path())]
+        + [(filename, profile_dir / filename) for filename in PROFILE_FILES]
+        + [(filename, profile_dir / filename) for filename in tailor_files]
         + [("config.toml", CONFIG_PATH)]
     )
     width = max(len(label) + 1 for label, _ in entries) + 1
@@ -128,13 +126,14 @@ def print_profile() -> None:
 
 def load_files(files: tuple[str, ...]) -> dict[str, str]:
     """Read the CV + the given profile .md files (errors raise)."""
-    cv = _resolve_cv_path()
+    cv = resolve_main_cv_path()
+    profile_dir = resolve_profile_dir()
     if not cv.is_file():
         raise ShobrError(f"profile file missing: {short_path(cv)}")
     texts: dict[str, str] = {"resume": cv.read_text(encoding="utf-8")}
     for filename in files:
         key = filename.removesuffix(".md").replace("-", "_")
-        path = _PROFILE_DIR / filename
+        path = profile_dir / filename
         if not path.is_file():
             raise ShobrError(
                 f"profile file missing: {short_path(path)} "
