@@ -445,8 +445,18 @@ def _run_tailor_for_row(row: EnrichedRow, print_prompt: bool, force: bool = Fals
     _run_tailor_live(row, profile)
 
 
+def _require_tailoring() -> None:
+    """Raise when the current board has no per-application tailoring."""
+    provider = current_provider()
+    if not provider.supports_tailoring:
+        raise ShobrError(
+            f"provider {provider.name} has no tailoring; screen and track postings directly"
+        )
+
+
 def tailor_posting_id(posting_id: str, print_prompt: bool, force: bool = False) -> None:
     """Build the application package for a specific pursue posting."""
+    _require_tailoring()
     row = get_enriched_row_on_stage(posting_id, "tailorable")
     _run_tailor_for_row(row, print_prompt, force)
 
@@ -472,6 +482,7 @@ def oldest_tailorable(
 
 def tailor_next(print_prompt: bool, force: bool = False) -> None:
     """Build the package for the oldest pursue row with no package yet."""
+    _require_tailoring()
     rows = get_enriched_rows()
     row = oldest_tailorable(
         list(rows.values()),
@@ -489,6 +500,7 @@ def tailor_all(force: bool = False) -> None:
 
     Skips stale rows unless forced. Fails when nothing was built.
     """
+    _require_tailoring()
     rows = get_enriched_rows()
     threshold = load_config()["stale_after_days"]
     screened = project_screening(current_provider().name)["rows"]

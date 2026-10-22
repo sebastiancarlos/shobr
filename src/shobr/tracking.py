@@ -21,7 +21,7 @@ from .core import (
     store_path,
 )
 from .enrichment import (
-    get_enriched_rows,
+    EnrichedRow,
     print_apply_block,
     print_description_block,
     project_enrichment,
@@ -30,7 +30,12 @@ from .enrichment import (
     warn_if_stale,
 )
 from .providers.base import current_provider
-from .screening import pill_line, print_screening_status, project_screening
+from .screening import (
+    ReviewDecision,
+    pill_line,
+    print_screening_status,
+    project_screening,
+)
 from .tailoring import TailoringRow, project_tailoring
 
 
@@ -103,35 +108,63 @@ def project_tracking(provider: str | None = None) -> TrackedStore:
     return {"tracked_at": events[-1]["tracked_at"], "rows": rows}
 
 
-def trackable_row(posting_id: str) -> TailoringRow:
-    """Return the packaged row for `posting_id`, raising when not trackable."""
-    require_events(DataKind.TAILORING)
-    provider = current_provider().name
-    key = store_key(provider, posting_id)
-    row = project_tailoring(provider)["rows"].get(key)
-    if row is not None:
-        return row
-    if event_log(DataKind.ENRICHMENT).exists() and key in project_enrichment(provider)["rows"]:
-        raise ShobrError(f"posting {posting_id} has no package yet")
-    raise ShobrError(f"posting {posting_id} not found in enrichment store")
+def trackable_row(posting_id: str) -> tuple[EnrichedRow, TailoringRow | None]:
+    """Return the enriched row plus its package, if the board tailors.
+
+    A board without tailoring has no package; its actionable pursue rows are
+    trackable directly after screening.
+    """
+    provider = current_provider()
+    key = store_key(provider.name, posting_id)
+    if provider.supports_tailoring:
+        require_events(DataKind.TAILORING)
+        package = project_tailoring(provider.name)["rows"].get(key)
+        if package is None:
+            if (
+                event_log(DataKind.ENRICHMENT).exists()
+                and key in project_enrichment(provider.name)["rows"]
+            ):
+                raise ShobrError(f"posting {posting_id} has no package yet")
+            raise ShobrError(f"posting {posting_id} not found in enrichment store")
+        enriched = project_enrichment(provider.name)["rows"].get(key)
+        if enriched is None:
+            raise ShobrError(f"posting {posting_id} not found in enrichment store")
+        return enriched, package
+    require_events(DataKind.ENRICHMENT)
+    enriched = project_enrichment(provider.name)["rows"].get(key)
+    if enriched is None:
+        raise ShobrError(f"posting {posting_id} not found in enrichment store")
+    if not enriched["actionable"]:
+        reason = enriched["rejected_reason"] or "unknown reason"
+        raise ShobrError(f"posting {posting_id} did not pass the pre-filter ({reason})")
+    require_events(DataKind.SCREENING)
+    screened = project_screening(provider.name)["rows"].get(key)
+    if screened is None or screened["decision"] != ReviewDecision.PURSUE:
+        raise ShobrError(f"posting {posting_id} is not marked pursue")
+    return enriched, None
 
 
-def _record_transition(row: TailoringRow, status: TrackStatus, note: str | None) -> None:
+def _record_transition(
+    enriched: EnrichedRow, package: TailoringRow | None, status: TrackStatus, note: str | None
+) -> None:
     """Persist (as event and on store) and report a status transition."""
     previous = project_tracking(current_provider().name)["rows"].get(
-        store_key(row["provider"], row["posting_id"])
+        store_key(enriched["provider"], enriched["posting_id"])
     )
     was = previous["status"].upper() if previous else "UNTRACKED"
     event: TrackEvent = {
         "tracked_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "posting_id": row["posting_id"],
-        "provider": row["provider"],
+        "posting_id": enriched["posting_id"],
+        "provider": enriched["provider"],
         "status": status,
         "note": note,
     }
     persist_event(DataKind.TRACKING, event, project_tracking)
     print("Recorded tracking:")
-    print(f"  - Posting: {row['posting_id']} ({row['slug']})")
+    if package is not None:
+        print(f"  - Posting: {enriched['posting_id']} ({package['slug']})")
+    else:
+        print(f"  - Posting: {enriched['posting_id']}")
     print(f"  - Status: {status.value.upper()} (was {was})")
     if note:
         print(f"  - Note: {note}")
@@ -140,21 +173,16 @@ def _record_transition(row: TailoringRow, status: TrackStatus, note: str | None)
 
 
 def track_posting_id(posting_id: str, status: str, note: str | None) -> None:
-    """Record a submission pipeline status for a packaged posting."""
+    """Record a submission pipeline status for a trackable posting."""
     try:
         track_status = TrackStatus(status)
     except ValueError:
         raise ShobrError(
             f"invalid status {status!r}; choose from " + ", ".join(s.value for s in TrackStatus)
         ) from None
-    row = trackable_row(posting_id)
-    warn_if_stale(
-        project_enrichment(current_provider().name)["rows"][
-            store_key(row["provider"], row["posting_id"])
-        ],
-        load_config()["stale_after_days"],
-    )
-    _record_transition(row, track_status, note)
+    enriched, package = trackable_row(posting_id)
+    warn_if_stale(enriched, load_config()["stale_after_days"])
+    _record_transition(enriched, package, track_status, note)
 
 
 def print_tracked() -> None:
@@ -189,33 +217,29 @@ def print_tracked() -> None:
         print()
 
 
-def _print_review(row: TailoringRow) -> None:
-    """Print the full package for one packaged row."""
+def _print_review(enriched: EnrichedRow, package: TailoringRow | None) -> None:
+    """Print the full package for one row, minus package parts when absent."""
     with paged():
-        # print enrichment info
-        rows = get_enriched_rows()
-        eref = rows.get(store_key(row["provider"], row["posting_id"]))
-        if eref is None:
-            raise ShobrError(f"posting {row['posting_id']} not found in enrichment store")
-        print(f"{row_header(eref)}{validity_tag(eref)}")
-        print(f"  - {eref['title']}")
-        checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
+        print(f"{row_header(enriched)}{validity_tag(enriched)}")
+        print(f"  - {enriched['title']}")
+        checked = datetime.fromisoformat(enriched["enriched_last_at"]).date().isoformat()
         threshold = load_config()["stale_after_days"]
-        print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
-        built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
-        print(f"  - Tailored At: {built}")
-        threshold = load_config()["stale_after_days"]
-        warn_if_stale(eref, threshold)
-        pills = pill_line(eref)
-        if pills:
+        print(f"  - Last Enriched At: {checked}{staleness_tag(enriched, threshold)}")
+        if package is not None:
+            built = datetime.fromisoformat(package["tailored_at"]).date().isoformat()
+            print(f"  - Tailored At: {built}")
+        warn_if_stale(enriched, threshold)
+        if pills := pill_line(enriched):
             print(f"  - {pills}")
-        print_apply_block(eref)
-        if line := same_company_line(eref["company"], eref["provider"], row["posting_id"]):
+        print_apply_block(enriched)
+        if line := same_company_line(
+            enriched["company"], enriched["provider"], enriched["posting_id"]
+        ):
             print(line)
 
         # print screening info
         sr = project_screening(current_provider().name)["rows"].get(
-            store_key(row["provider"], row["posting_id"])
+            store_key(enriched["provider"], enriched["posting_id"])
         )
         if sr is None:
             print("  - Screening: N/A")
@@ -225,7 +249,7 @@ def _print_review(row: TailoringRow) -> None:
 
         # print tracking info
         tracked = project_tracking(current_provider().name)["rows"].get(
-            store_key(row["provider"], row["posting_id"])
+            store_key(enriched["provider"], enriched["posting_id"])
         )
         print("  - Tracking:")
         if tracked is None:
@@ -234,40 +258,54 @@ def _print_review(row: TailoringRow) -> None:
             print(f"    - Status: {str(tracked['status']).upper()}")
             if tracked["note"]:
                 print(f"    - Note: {tracked['note']}")
-        print(f"  - Slug: {row['slug']}")
-        print(f"  - {BOLD}Application dir:{RESET} {short_path(row['app_dir'])}")
-        print_description_block("Description", eref["job_description"], truncate=False)
-        print_description_block("Company description", eref["company_description"], truncate=False)
+        if package is not None:
+            print(f"  - Slug: {package['slug']}")
+            print(f"  - {BOLD}Application dir:{RESET} {short_path(package['app_dir'])}")
+        print_description_block("Description", enriched["job_description"], truncate=False)
+        print_description_block(
+            "Company description", enriched["company_description"], truncate=False
+        )
         print()
-        print(f"{BOLD}--- RESUME ---{RESET}")
-        print()
-        print(row["resume_md"])
-        print()
-        print(f"{BOLD}--- COVER LETTER ---{RESET}")
-        print()
-        print(row["cover_md"])
+        if package is not None:
+            print(f"{BOLD}--- RESUME ---{RESET}")
+            print()
+            print(package["resume_md"])
+            print()
+            print(f"{BOLD}--- COVER LETTER ---{RESET}")
+            print()
+            print(package["cover_md"])
 
 
 def review_posting_id(posting_id: str) -> None:
-    """Print the full package for a specific packaged posting."""
-    row = trackable_row(posting_id)
-    _print_review(row)
+    """Print the full listing for a specific trackable posting."""
+    enriched, package = trackable_row(posting_id)
+    _print_review(enriched, package)
 
 
 def review_next() -> None:
-    """Print the full package for the oldest packaged posting with no
-    tracking event yet."""
-    require_events(DataKind.TAILORING)
-    tracked = project_tracking(current_provider().name)["rows"]
-    passing = {
-        row["posting_id"]
-        for row in project_enrichment(current_provider().name)["rows"].values()
-        if row["actionable"]
-    }
-    for key, row in project_tailoring(current_provider().name)["rows"].items():
-        if key in tracked or row["posting_id"] not in passing:
-            continue
-        _print_review(row)
+    """Print the oldest pursue posting with no tracking event yet."""
+    provider = current_provider()
+    tracked = project_tracking(provider.name)["rows"]
+    enriched = project_enrichment(provider.name)["rows"]
+    passing = {key: row for key, row in enriched.items() if row["actionable"]}
+    if provider.supports_tailoring:
+        require_events(DataKind.TAILORING)
+        candidates = [
+            (passing[key], package)
+            for key, package in project_tailoring(provider.name)["rows"].items()
+            if key not in tracked and key in passing
+        ]
+    else:
+        screened = project_screening(provider.name)["rows"]
+        candidates = [
+            (row, None)
+            for key, row in passing.items()
+            if key not in tracked
+            and (sr := screened.get(key)) is not None
+            and sr["decision"] == ReviewDecision.PURSUE
+        ]
+    for row, package in candidates:
+        _print_review(row, package)
         print(f"If you applied, track it: {BLUE}shobr track {row['posting_id']} applied{RESET}")
         return
     print("nothing to review")

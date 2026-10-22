@@ -97,6 +97,8 @@ def _pending_tailoring(
     screened: dict[str, ScreeningRow], tailored_ids: set[str], enriched: list[EnrichedRow]
 ) -> int:
     """Pursue rows with no package yet, still passing enrichment."""
+    if not current_provider().supports_tailoring:
+        return 0
     passing = {row["posting_id"] for row in enriched if row["actionable"]}
     return sum(
         1
@@ -107,12 +109,33 @@ def _pending_tailoring(
     )
 
 
-def _pending_review(
-    tailored_ids: set[str], tracked_ids: set[str], enriched: list[EnrichedRow]
-) -> int:
-    """Packaged postings with no tracking event yet, still passing enrichment."""
+def _pending_review_ids(
+    screened: dict[str, ScreeningRow],
+    tailored_ids: set[str],
+    tracked_ids: set[str],
+    enriched: list[EnrichedRow],
+) -> set[str]:
+    """Actionable posting ids awaiting review or tracking."""
     passing = {row["posting_id"] for row in enriched if row["actionable"]}
-    return sum(1 for pid in tailored_ids if pid not in tracked_ids and pid in passing)
+    if not current_provider().supports_tailoring:
+        return {
+            sr["posting_id"]
+            for sr in screened.values()
+            if sr["decision"] == ReviewDecision.PURSUE
+            and sr["posting_id"] not in tracked_ids
+            and sr["posting_id"] in passing
+        }
+    return {pid for pid in tailored_ids if pid not in tracked_ids and pid in passing}
+
+
+def _pending_review(
+    screened: dict[str, ScreeningRow],
+    tailored_ids: set[str],
+    tracked_ids: set[str],
+    enriched: list[EnrichedRow],
+) -> int:
+    """Packaged or directly trackable postings with no tracking event yet."""
+    return len(_pending_review_ids(screened, tailored_ids, tracked_ids, enriched))
 
 
 def print_status() -> None:
@@ -124,6 +147,8 @@ def print_status() -> None:
     passing = {row["posting_id"] for row in enriched if row["actionable"]}
     tailored_ids = _ids(tailored)
     tracked_ids = _ids(tracked)
+    tailoring_supported = current_provider().supports_tailoring
+    pending_review_ids = _pending_review_ids(screened, tailored_ids, tracked_ids, enriched)
 
     skip = sum(1 for sr in screened.values() if sr["decision"] == ReviewDecision.SKIP)
     pending_human = sum(
@@ -145,19 +170,21 @@ def print_status() -> None:
     left_header, right_header = "LLM Scores:", "Human Scores:"
     left_rows = [f"{score}: {ai_scores[score]}" for score in scores_desc]
     right_rows = []
+    pending_ids = tailored_ids if tailoring_supported else tracked_ids
+    verb = "to tailor" if tailoring_supported else "to track"
     for score in scores_desc:
         text = f"{score}: {human_scores[score]}"
-        to_tailor = sum(
+        pending = sum(
             1
             for sr in screened.values()
             if sr["human"] is not None
             and int(sr["human"]["score"]) == score
             and sr["decision"] == ReviewDecision.PURSUE
-            and sr["posting_id"] not in tailored_ids
+            and sr["posting_id"] not in pending_ids
             and sr["posting_id"] in passing
         )
-        if to_tailor:
-            text += f" ({to_tailor} to tailor)"
+        if pending:
+            text += f" ({pending} {verb})"
         right_rows.append(text)
     column = max(len(left_header), *(len(row) for row in left_rows)) + 4
     histogram = [f"  - {left_header.ljust(column)}{right_header}"]
@@ -192,19 +219,16 @@ def print_status() -> None:
             for sr in screened.values()
             if sr["decision"] == ReviewDecision.PENDING and sr["posting_id"] in passing
         ),
-        "Pending Tailoring:": _stale_suffix(
+        "Pending Review:": _stale_suffix(pending_review_ids),
+    }
+    if tailoring_supported:
+        stale_note["Pending Tailoring:"] = _stale_suffix(
             sr["posting_id"]
             for sr in screened.values()
             if sr["decision"] == ReviewDecision.PURSUE
             and sr["posting_id"] not in tailored_ids
             and sr["posting_id"] in passing
-        ),
-        "Pending Review:": _stale_suffix(
-            row["posting_id"]
-            for row in tailored.values()
-            if row["posting_id"] not in tracked_ids and row["posting_id"] in passing
-        ),
-    }
+        )
 
     def _breakdown(pids: Iterable[str]) -> str:
         parts = []
@@ -224,6 +248,25 @@ def print_status() -> None:
             for status in TrackStatus
         },
     }
+
+    screening_rows = [
+        ("Total Screened:", len(screened), BLUE),
+        ("Skipped:", skip, RED),
+        ("Lacking LLM Review:", lacking_llm, YELLOW),
+        ("Pending Human Review:", pending_human, YELLOW),
+    ]
+    if tailoring_supported:
+        screening_rows.append(
+            ("Pending Tailoring:", _pending_tailoring(screened, tailored_ids, enriched), GREEN)
+        )
+    else:
+        screening_rows.append(("Pending Review:", len(pending_review_ids), GREEN))
+    review_rows = []
+    if tailoring_supported:
+        review_rows = [
+            ("Packages Built:", len(tailored), BLUE),
+            ("Pending Review:", len(pending_review_ids), GREEN),
+        ]
 
     sections: list[tuple[str, list[tuple[str, int, str]]]] = [
         (
@@ -252,25 +295,12 @@ def print_status() -> None:
         ),
         (
             "SCREENING",
-            [
-                ("Total Screened:", len(screened), BLUE),
-                ("Skipped:", skip, RED),
-                ("Lacking LLM Review:", lacking_llm, YELLOW),
-                ("Pending Human Review:", pending_human, YELLOW),
-                (
-                    "Pending Tailoring:",
-                    _pending_tailoring(screened, tailored_ids, enriched),
-                    GREEN,
-                ),
-            ],
+            screening_rows,
         ),
-        (
-            "TAILORING",
-            [
-                ("Packages Built:", len(tailored), BLUE),
-                ("Pending Review:", _pending_review(tailored_ids, tracked_ids, enriched), GREEN),
-            ],
-        ),
+    ]
+    if tailoring_supported:
+        sections.append(("TAILORING", review_rows))
+    sections.append(
         (
             "TRACKING",
             [
@@ -281,8 +311,8 @@ def print_status() -> None:
                 )
                 for status in TrackStatus
             ],
-        ),
-    ]
+        )
+    )
     width = max(len(label) for _, rows in sections for label, _, _ in rows)
     print("SHOBR STATUS")
     print()
@@ -413,7 +443,7 @@ def _run_next() -> None:
             tailor_next(False)
             return
 
-    if _pending_review(_ids(tailored), _ids(tracked), enriched):
+    if _pending_review(screened, _ids(tailored), _ids(tracked), enriched):
         review_next()
         return
 
@@ -485,7 +515,7 @@ def _run_next_for_id(posting_id: str) -> None:
     if sr["decision"] != ReviewDecision.PURSUE:
         print(f"nothing to do for {posting_id}")
         return
-    if key not in tailored:
+    if current_provider().supports_tailoring and key not in tailored:
         if _confirm(
             f"Tailor {posting_id}? ({BLUE}shobr tailor {posting_id}{RESET}) {BOLD}[y/N]{RESET} "
         ):
