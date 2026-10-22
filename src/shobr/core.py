@@ -127,6 +127,16 @@ def render_template(name: str, **kwargs: object) -> str:
     return get_template(name).format(**kwargs)
 
 
+def shobr_command(command: str) -> str:
+    """Prefix a suggested shobr command with --provider when non-default."""
+    from .providers.base import DEFAULT_PROVIDER, current_provider
+
+    provider = current_provider()
+    if provider.name == DEFAULT_PROVIDER:
+        return f"shobr {command}"
+    return f"shobr --provider {provider.name} {command}"
+
+
 def require_events(kind: DataKind) -> None:
     """Raise ShobrError unless the data kind's event log exists."""
     suggested_commands = {
@@ -139,7 +149,8 @@ def require_events(kind: DataKind) -> None:
     }
     if not event_log(kind).exists():
         raise ShobrError(
-            f"no {kind.value} data yet; run {BLUE}shobr {suggested_commands[kind]}{RESET} first"
+            f"no {kind.value} data yet; run "
+            f"{BLUE}{shobr_command(suggested_commands[kind])}{RESET} first"
         )
 
 

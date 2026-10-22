@@ -6,7 +6,7 @@ from datetime import datetime
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
 from .config import load_config
-from .core import ShobrError, store_key
+from .core import ShobrError, shobr_command, store_key
 from .discovery import StoredJob, discover, project_discovery
 from .enrichment import (
     EnrichedRow,
@@ -359,7 +359,8 @@ def _run_next() -> None:
     if pending := _pending_enrichment(leads, enriched_ids):
         print(f"{pending} leads awaiting enrichment.")
         if _confirm(
-            f"Fetch oldest lead details? ({BLUE}shobr enrich-next{RESET}) {BOLD}[y/N]{RESET} "
+            f"Fetch oldest lead details? ({BLUE}{shobr_command('enrich-next')}{RESET}) "
+            f"{BOLD}[y/N]{RESET} "
         ):
             enrich_next()
             return
@@ -383,17 +384,16 @@ def _run_next() -> None:
         if oldest is not None:
             checked = datetime.fromisoformat(oldest["enriched_last_at"]).date().isoformat()
             print(f"Oldest pending row last checked {checked} (> {threshold} days ago).")
-            if _confirm(
-                f"Re-enrich it first? ({BLUE}shobr enrich {oldest['posting_id']}{RESET}) "
-                f"{BOLD}[y/N]{RESET} "
-            ):
+            enrich_command = shobr_command(f"enrich {oldest['posting_id']}")
+            if _confirm(f"Re-enrich it first? ({BLUE}{enrich_command}{RESET}) {BOLD}[y/N]{RESET} "):
                 enrich_posting_id(oldest["posting_id"])
                 return
         if lacking:
             answer = (
                 input(
-                    f"Score with [L]LM ({BLUE}shobr screen-llm-next{RESET}), [h]uman "
-                    f"({BLUE}shobr screen-next{RESET}), or [N]ot now? {BOLD}[N]{RESET} "
+                    f"Score with [L]LM ({BLUE}{shobr_command('screen-llm-next')}{RESET}), "
+                    f"[h]uman ({BLUE}{shobr_command('screen-next')}{RESET}), "
+                    f"or [N]ot now? {BOLD}[N]{RESET} "
                 )
                 .strip()
                 .lower()
@@ -405,7 +405,8 @@ def _run_next() -> None:
                 screen_next(None, None)
                 return
         elif input(
-            f"Review in [h]uman editor ({BLUE}shobr screen-next{RESET})? {BOLD}[y/N]{RESET} "
+            f"Review in [h]uman editor ({BLUE}{shobr_command('screen-next')}{RESET})? "
+            f"{BOLD}[y/N]{RESET} "
         ).strip().lower() in (
             "y",
             "yes",
@@ -431,14 +432,13 @@ def _run_next() -> None:
         if oldest is not None:
             checked = datetime.fromisoformat(oldest["enriched_last_at"]).date().isoformat()
             print(f"Oldest pending row last checked {checked} (> {threshold} days ago).")
-            if _confirm(
-                f"Re-enrich it first? ({BLUE}shobr enrich {oldest['posting_id']}{RESET}) "
-                f"{BOLD}[y/N]{RESET} "
-            ):
+            enrich_command = shobr_command(f"enrich {oldest['posting_id']}")
+            if _confirm(f"Re-enrich it first? ({BLUE}{enrich_command}{RESET}) {BOLD}[y/N]{RESET} "):
                 enrich_posting_id(oldest["posting_id"])
                 return
         if _confirm(
-            f"Tailor oldest screened lead? ({BLUE}shobr tailor-next{RESET}) {BOLD}[y/N]{RESET} "
+            f"Tailor oldest screened lead? ({BLUE}{shobr_command('tailor-next')}{RESET}) "
+            f"{BOLD}[y/N]{RESET} "
         ):
             tailor_next(False)
             return
@@ -447,7 +447,7 @@ def _run_next() -> None:
         review_next()
         return
 
-    if _confirm(f"Fetch new leads? ({BLUE}shobr discover{RESET}) {BOLD}[y/N]{RESET} "):
+    if _confirm(f"Fetch new leads? ({BLUE}{shobr_command('discover')}{RESET}) {BOLD}[y/N]{RESET} "):
         discover()
         return
 
@@ -469,7 +469,8 @@ def _run_next_for_id(posting_id: str) -> None:
     enriched_rows = {row["posting_id"]: row for row in enriched}
     if posting_id not in enriched_rows:
         if _confirm(
-            f"Fetch details for {posting_id}? ({BLUE}shobr enrich {posting_id}{RESET}) "
+            f"Fetch details for {posting_id}? "
+            f"({BLUE}{shobr_command(f'enrich {posting_id}')}{RESET}) "
             f"{BOLD}[y/N]{RESET} "
         ):
             enrich_posting_id(posting_id)
@@ -504,7 +505,8 @@ def _run_next_for_id(posting_id: str) -> None:
                 screen_posting_id(posting_id, None, None)
                 return
         elif _confirm(
-            f"Review {posting_id} in [h]uman editor ({BLUE}shobr screen {posting_id}{RESET})? "
+            f"Review {posting_id} in [h]uman editor "
+            f"({BLUE}{shobr_command(f'screen {posting_id}')}{RESET})? "
             f"{BOLD}[y/N]{RESET} "
         ):
             screen_posting_id(posting_id, None, None)
@@ -517,7 +519,9 @@ def _run_next_for_id(posting_id: str) -> None:
         return
     if current_provider().supports_tailoring and key not in tailored:
         if _confirm(
-            f"Tailor {posting_id}? ({BLUE}shobr tailor {posting_id}{RESET}) {BOLD}[y/N]{RESET} "
+            f"Tailor {posting_id}? "
+            f"({BLUE}{shobr_command(f'tailor {posting_id}')}{RESET}) "
+            f"{BOLD}[y/N]{RESET} "
         ):
             tailor_posting_id(posting_id, False)
             return

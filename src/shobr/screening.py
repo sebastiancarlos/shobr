@@ -31,6 +31,7 @@ from .core import (
     require_events,
     row_header,
     same_company_line,
+    shobr_command,
     short_path,
     stage_line,
     store_key,
@@ -121,7 +122,7 @@ def print_profile() -> None:
         print(f"{BOLD}{key}{RESET} {shown}{missing}")
     if any(not path.is_file() for label, path in entries if label != "CV"):
         print()
-        print(f"Some profile files are missing. Run {BLUE}shobr setup{RESET}")
+        print(f"Some profile files are missing. Run {BLUE}{shobr_command('setup')}{RESET}")
 
 
 def load_files(files: tuple[str, ...]) -> dict[str, str]:
@@ -137,7 +138,7 @@ def load_files(files: tuple[str, ...]) -> dict[str, str]:
         if not path.is_file():
             raise ShobrError(
                 f"profile file missing: {short_path(path)} "
-                f"(run {BLUE}shobr setup{RESET} to scaffold it)"
+                f"(run {BLUE}{shobr_command('setup')}{RESET} to scaffold it)"
             )
         content = path.read_text(encoding="utf-8")
         if _PROFILE_TEMPLATE_SENTINEL in content:

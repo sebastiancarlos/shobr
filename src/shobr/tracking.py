@@ -16,6 +16,7 @@ from .core import (
     require_events,
     row_header,
     same_company_line,
+    shobr_command,
     short_path,
     store_key,
     store_path,
@@ -306,6 +307,7 @@ def review_next() -> None:
         ]
     for row, package in candidates:
         _print_review(row, package)
-        print(f"If you applied, track it: {BLUE}shobr track {row['posting_id']} applied{RESET}")
+        track_command = shobr_command(f"track {row['posting_id']} applied")
+        print(f"If you applied, track it: {BLUE}{track_command}{RESET}")
         return
     print("nothing to review")

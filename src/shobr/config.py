@@ -14,6 +14,7 @@ from .core import (
     ShobrError,
     fold_accents,
     get_template,
+    shobr_command,
     short_path,
 )
 
@@ -82,7 +83,8 @@ def _raw_config() -> dict:
     """Read config.toml verbatim, raising on a missing or invalid file."""
     if not CONFIG_PATH.is_file():
         raise ShobrError(
-            f"profile file missing: {short_path(CONFIG_PATH)} (run `shobr setup` to scaffold it)"
+            f"profile file missing: {short_path(CONFIG_PATH)} "
+            f"(run `{shobr_command('setup')}` to scaffold it)"
         )
     try:
         return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))

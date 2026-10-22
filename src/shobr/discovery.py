@@ -23,6 +23,7 @@ from .core import (
     rejected_tag,
     require_events,
     same_company_line,
+    shobr_command,
     short_path,
     stage_line,
     store_key,
@@ -336,8 +337,8 @@ def discover_posting_id(target: str) -> None:
         known = {row["posting_id"] for row in project_discovery(provider.name)["rows"]}
         if posting_id in known:
             raise ShobrError(
-                f"posting {posting_id} is already a known lead; "
-                f"fetch its detail with `shobr enrich {posting_id}`"
+                f"posting {posting_id} is already a known lead; fetch its detail with "
+                f"`{shobr_command(f'enrich {posting_id}')}`"
             )
     nav_url = provider.nav_url(posting_id, target)
     detail = cast("JobDetailPayload", beachmsg_json(provider.detail_command, nav_url))

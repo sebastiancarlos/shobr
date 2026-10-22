@@ -26,6 +26,7 @@ from .core import (
     require_events,
     row_header,
     same_company_line,
+    shobr_command,
     short_path,
     stage_line,
     store_key,
@@ -179,9 +180,10 @@ def is_stale(row: EnrichedRow, threshold_days: int) -> bool:
 def warn_if_stale(row: EnrichedRow, threshold_days: int) -> None:
     """Print the re-enrich nudge when the row's last check is stale."""
     if is_stale(row, threshold_days):
+        enrich_command = shobr_command(f"enrich {row['posting_id']}")
         print(
             f"  - Stale: last checked over {threshold_days} days ago;"
-            f" consider `shobr enrich {row['posting_id']}` first"
+            f" consider `{enrich_command}` first"
         )
 
 
@@ -190,10 +192,11 @@ def refuse_if_stale(row: EnrichedRow, threshold_days: int, force: bool) -> None:
     if force or not is_stale(row, threshold_days):
         return
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
+    enrich_command = shobr_command(f"enrich {row['posting_id']}")
     raise ShobrError(
         f"posting {row['posting_id']} last checked {checked}"
         f" (> {threshold_days} days ago);"
-        f" re-enrich (`shobr enrich {row['posting_id']}`) or pass --force"
+        f" re-enrich (`{enrich_command}`) or pass --force"
     )
 
 

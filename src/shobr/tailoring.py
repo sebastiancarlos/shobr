@@ -21,6 +21,7 @@ from .core import (
     require_events,
     row_header,
     same_company_line,
+    shobr_command,
     short_path,
     stage_line,
     store_key,
@@ -266,11 +267,12 @@ def _notes_markdown(row: EnrichedRow, screening: ScreeningRow | None) -> str:
     """Render the job description to be added to notes.md."""
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
     built = datetime.now(UTC).date().isoformat()
+    review_command = shobr_command(f"review {row['posting_id']}")
     lines = [
         "# SHOBR Job Description",
         "",
         "The shobr state for the job when this package was tailored "
-        f"({built}). `shobr review {row['posting_id']}` shows the live state.",
+        f"({built}). `{review_command}` shows the live state.",
         "",
         f"- Posting: {row['posting_url']}",
         f"- Company: {row['company']}",
