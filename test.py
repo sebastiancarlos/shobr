@@ -17,6 +17,7 @@ import termios
 import threading
 import time
 import unittest
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -32,6 +33,7 @@ _KEEP_OUTPUTS = "--keep-outputs" in sys.argv or os.environ.get("SHOBR_KEEP_OUTPU
 
 ROOT = Path(__file__).resolve().parent
 FIXTURES_DIR = ROOT / "test-fixtures"
+FAKE_PROVIDERS_DIR = FIXTURES_DIR / "fake-providers"
 
 # The browser the suite drives. CI runs a Firefox leg via SHOBR_TEST_BROWSER;
 # locally it stays chromium.
@@ -476,6 +478,73 @@ def stored_key(posting_id: str) -> str:
     return f"{DEFAULT_PROVIDER}/{posting_id}"
 
 
+def install_fake_providers(
+    data_home: TestDataHome, specs: Mapping[str, Mapping[str, object]]
+) -> dict[str, str]:
+    """Write temporary provider modules and return env pointing Python at them.
+
+    The generated `shobr` package reuses the checkout's real modules by
+    extending `__path__`, so CLI subprocesses see the fake boards without
+    touching `src/shobr/providers`.
+    """
+    root = data_home.path / "fake-provider-package"
+    providers = root / "shobr" / "providers"
+    providers.mkdir(parents=True)
+    code_root = ROOT / "src" / "shobr"
+    (root / "shobr" / "__init__.py").write_text(
+        f"from pathlib import Path\n__path__.append({str(code_root)!r})\n"
+    )
+    (providers / "__init__.py").write_text(
+        f"from pathlib import Path\n__path__.append({str(code_root / 'providers')!r})\n"
+    )
+    (providers / "_fake_common.py").write_text(
+        (FAKE_PROVIDERS_DIR / "fake-common.py").read_text(encoding="utf-8")
+    )
+    for name, spec in specs.items():
+        values: dict[str, object] = {
+            "display_name": name.title(),
+            "supports_tailoring": True,
+            "has_location": True,
+            "has_company": True,
+            "has_notifications": False,
+        }
+        values.update(spec)
+        (providers / f"{name}.py").write_text(
+            "from ._fake_common import FakeProvider\n\n"
+            "PROVIDER = FakeProvider(\n"
+            f"    name={name!r},\n"
+            f"    display_name={values['display_name']!r},\n"
+            f"    supports_tailoring={values['supports_tailoring']!r},\n"
+            f"    has_location={values['has_location']!r},\n"
+            f"    has_company={values['has_company']!r},\n"
+            f"    has_notifications={values['has_notifications']!r},\n"
+            ")\n"
+        )
+    return {"PYTHONPATH": str(root) + os.pathsep + data_home.env.get("PYTHONPATH", "")}
+
+
+def fake_provider_env(
+    data_home: TestDataHome, specs: Mapping[str, Mapping[str, object]], **extra: str
+) -> dict[str, str]:
+    """Build a CLI env containing the checkout's fake provider package."""
+    return {
+        **data_home.env,
+        **install_fake_providers(data_home, specs),
+        **extra,
+    }
+
+
+def install_fake_provider_commands(data_home: TestDataHome, name: str) -> None:
+    """Install browser commands for one fake provider under the test XDG home."""
+    commands = data_home.path / "beachpatrol" / "commands"
+    commands.mkdir(parents=True, exist_ok=True)
+    for stem in ("job-search", "job-detail"):
+        (commands / f"{name}-{stem}.js").write_text(
+            (FAKE_PROVIDERS_DIR / f"{stem}.js").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+
 def _build_snapshot(
     name: str,
     pages: dict[str, str | list[str]],
@@ -832,6 +901,131 @@ def seed_enrichment_event(
     }
     event.update(overrides)
     _append_event(data_home.shobr_data / "enrichment" / "events.jsonl", event)
+
+
+def seed_provider_discovery(
+    data_home: TestDataHome,
+    provider: str,
+    posting_id: str,
+    *,
+    title: str = "Test Engineer",
+    company: str = "Acme",
+    location: str = "Testville",
+    fetched_at: str = "2026-01-01T00:00:00+00:00",
+) -> None:
+    """Append one discovery event for a named provider."""
+    _append_event(
+        data_home.shobr_data / "discovery" / "events.jsonl",
+        {
+            "fetched_at": fetched_at,
+            "source": {
+                "type": "query",
+                "query": {
+                    "provider": provider,
+                    "url": f"https://{provider}.example.test/search",
+                    "titles": [],
+                    "workplace_types": [],
+                    "geo": [],
+                },
+            },
+            "rows": [
+                {
+                    "posting_id": posting_id,
+                    "provider": provider,
+                    "posting_url": f"https://{provider}.example.test/jobs/{posting_id}",
+                    "title": title,
+                    "company": company,
+                    "location": location,
+                }
+            ],
+        },
+    )
+
+
+def seed_provider_enrichment(
+    data_home: TestDataHome,
+    provider: str,
+    posting_id: str,
+    *,
+    title: str = "Test Engineer",
+    company: str = "Acme",
+    location: str = "Testville",
+    location_type: str | None = "Remote",
+    employment_type: str | None = "Full-time",
+    job_description: str = "Test job.",
+    company_description: str = "Test company.",
+    fetched_at: str | None = None,
+) -> None:
+    """Append one enrichment event for a named provider."""
+    _append_event(
+        data_home.shobr_data / "enrichment" / "events.jsonl",
+        {
+            "fetched_at": fetched_at or datetime.now(UTC).isoformat(timespec="seconds"),
+            "posting_id": posting_id,
+            "posting_url": f"https://{provider}.example.test/jobs/{posting_id}",
+            "title": title,
+            "company": company,
+            "location": location,
+            "provider": provider,
+            "job_description_html": f"<p>{job_description}</p>",
+            "company_description_html": (
+                f"<p>{company_description}</p>" if company_description else ""
+            ),
+            "job_description": job_description,
+            "company_description": company_description,
+            "location_type": location_type,
+            "employment_type": employment_type,
+            "salary_range": None,
+            "accepting_applications": True,
+            "apply_method": "external",
+            "apply_url": f"https://apply.example.test/{posting_id}",
+        },
+    )
+
+
+def seed_provider_screening(
+    data_home: TestDataHome,
+    provider: str,
+    posting_id: str,
+    *,
+    score: int = 4,
+    kind: str = "human_review",
+    reasoning: str = "seeded review",
+    scored_at: str = "2026-01-01T00:00:00+00:00",
+) -> None:
+    """Append one screening event for a named provider."""
+    _append_event(
+        data_home.shobr_data / "screening" / "events.jsonl",
+        {
+            "scored_at": scored_at,
+            "posting_id": posting_id,
+            "provider": provider,
+            "kind": kind,
+            "score": score,
+            "reasoning": reasoning,
+        },
+    )
+
+
+def seed_provider_tracking(
+    data_home: TestDataHome,
+    provider: str,
+    posting_id: str,
+    *,
+    status: str = "applied",
+    tracked_at: str = "2026-01-01T00:00:00+00:00",
+) -> None:
+    """Append one tracking event for a named provider."""
+    _append_event(
+        data_home.shobr_data / "tracking" / "events.jsonl",
+        {
+            "tracked_at": tracked_at,
+            "posting_id": posting_id,
+            "provider": provider,
+            "status": status,
+            "note": None,
+        },
+    )
 
 
 def refresh_enrichment(data_home: TestDataHome, posting_id: str = "1234567890") -> None:
@@ -5807,9 +6001,585 @@ class TestCLI(unittest.TestCase):
                 self.assertLess(result.stdout.index("FreshCo"), result.stdout.index("StaleCo"))
 
 
+class TestProviderCLI(unittest.TestCase):
+    """End-to-end provider behavior, using temporary synthetic provider modules."""
+
+    def test_fake_provider_selection_and_missing_store_hint(self) -> None:
+        """The CLI discovers fake boards, selects them, and names them in hints."""
+        with TestDataHome() as data_home:
+            env = fake_provider_env(
+                data_home,
+                {"alpha": {}, "beta": {}},
+            )
+            for name in ("alpha", "beta"):
+                result = shobr("--provider", name, "status", env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("SHOBR STATUS", result.stdout)
+            after = shobr("status", "--provider", "alpha", env=env)
+            self.assertEqual(after.returncode, 0, after.stderr)
+
+            missing = shobr("--provider", "missing", "status", env=env)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("invalid choice", missing.stderr)
+
+            no_store = shobr("--provider", "alpha", "discovered", env=env)
+            self.assertNotEqual(no_store.returncode, 0)
+            self.assertIn("shobr --provider alpha discover", no_store.stderr)
+
+    def test_provider_config_overrides_profile_paths(self) -> None:
+        """profiles and CV paths come from the active provider section."""
+        text = (
+            CONFIG_DEFAULT
+            + "\n[providers.alpha]\n"
+            + 'profile_dir = "profiles/alpha"\n'
+            + 'main_cv_path = "cvs/alpha.md"\n'
+            + 'cv_toolchain_dir = "toolchains/alpha"\n'
+            + "\n[providers.beta]\n"
+            + 'cv_toolchain_dir = "toolchains/beta"\n'
+        )
+        with TestDataHome() as data_home:
+            seed_test_config(data_home, text)
+            env = fake_provider_env(data_home, {"alpha": {}, "beta": {}})
+
+            alpha = shobr("--provider", "alpha", "profile", env=env)
+            self.assertEqual(alpha.returncode, 0, alpha.stderr)
+            self.assertIn(
+                str(data_home.shobr_config / "profiles/alpha/user-detail.md"),
+                alpha.stdout,
+            )
+            self.assertIn(str(data_home.shobr_config / "cvs/alpha.md"), alpha.stdout)
+
+            beta = shobr("--provider", "beta", "profile", env=env)
+            self.assertEqual(beta.returncode, 0, beta.stderr)
+            self.assertIn(
+                str(data_home.shobr_config / "toolchains/beta/resume.md"),
+                beta.stdout,
+            )
+            self.assertIn(
+                str(data_home.shobr_config / "profile/user-detail.md"),
+                beta.stdout,
+            )
+
+            override = data_home.path / "override.md"
+            env_override = {
+                **env,
+                "SHOBR_MAIN_CV_PATH": str(override),
+            }
+            alpha = shobr("--provider", "alpha", "profile", env=env_override)
+            self.assertEqual(alpha.returncode, 0, alpha.stderr)
+            self.assertIn(str(override), alpha.stdout)
+
+    def test_provider_cv_toolchain_path_is_used_for_tailoring(self) -> None:
+        """A provider-specific CV toolchain receives the built package."""
+        with TestDataHome() as data_home:
+            cv_env = seed_test_cv(data_home)
+            cv_dir = data_home.path / "cv"
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT + "\n[providers.alpha]\n" + f'cv_toolchain_dir = "{cv_dir}"\n',
+            )
+            env = fake_provider_env(data_home, {"alpha": {}})
+            env = {
+                **env,
+                **seed_test_profile(data_home),
+                **cv_env,
+                "SHOBR_CV_TOOLCHAIN_DIR": "",
+            }
+            seed_provider_enrichment(data_home, "alpha", "1")
+            seed_provider_screening(data_home, "alpha", "1", score=4)
+            with FakeLLMServer() as llm_server:
+                result = shobr(
+                    "--provider",
+                    "alpha",
+                    "tailor-next",
+                    env={**env, **llm_server.env},
+                )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((cv_dir / "applications" / "acme-1").is_dir())
+            tailored = stored_rows(data_home.shobr_data / "tailoring" / "tailoring.json")
+            self.assertIn("alpha/1", tailored)
+
+    def test_provider_config_validation_names_the_problem(self) -> None:
+        """Provider sections must name discovered boards and be TOML tables."""
+        with TestDataHome() as data_home:
+            env = fake_provider_env(data_home, {"alpha": {}})
+            seed_provider_enrichment(data_home, "alpha", "1")
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT + "\n[providers.missing]\ntitles = []\n",
+            )
+            unknown = shobr("--provider", "alpha", "status", env=env)
+            self.assertNotEqual(unknown.returncode, 0)
+            self.assertIn("unknown provider 'missing'", unknown.stderr)
+
+            seed_test_config(data_home, CONFIG_DEFAULT + '\n[providers]\nalpha = "bad"\n')
+            not_table = shobr("--provider", "alpha", "status", env=env)
+            self.assertNotEqual(not_table.returncode, 0)
+            self.assertIn("must be a table", not_table.stderr)
+
+    def test_discovery_rows_are_namespaced_by_provider(self) -> None:
+        """The same posting id on two boards is two independent leads."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_discovery(data_home, "alpha", "1", title="Alpha Job")
+            seed_provider_discovery(data_home, "beta", "1", title="Beta Job")
+            env = fake_provider_env(data_home, {"alpha": {}, "beta": {}})
+
+            alpha = shobr("--provider", "alpha", "discovered", env=env)
+            self.assertEqual(alpha.returncode, 0, alpha.stderr)
+            self.assertIn("Alpha Job", alpha.stdout)
+            self.assertNotIn("Beta Job", alpha.stdout)
+
+            beta = shobr("--provider", "beta", "discovered", env=env)
+            self.assertEqual(beta.returncode, 0, beta.stderr)
+            self.assertIn("Beta Job", beta.stdout)
+            self.assertNotIn("Alpha Job", beta.stdout)
+
+    def test_accent_folding_in_reject_title_filter(self) -> None:
+        """Accented titles match the folded reject-title patterns."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_discovery(data_home, "alpha", "1", title="Jáva Developer")
+            env = fake_provider_env(data_home, {"alpha": {}})
+
+            result = shobr("--provider", "alpha", "discovered", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            flat = _flat(result.stdout)
+            self.assertIn("Jáva Developer", flat)
+            self.assertIn("REJECTED", flat)
+            self.assertIn("title", flat)
+
+    def test_enrichment_rows_are_namespaced_by_provider(self) -> None:
+        """Enriched rows with the same posting id stay per board."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_enrichment(data_home, "alpha", "1", title="Alpha Job")
+            seed_provider_enrichment(data_home, "beta", "1", title="Beta Job")
+            env = fake_provider_env(data_home, {"alpha": {}, "beta": {}})
+
+            alpha = shobr("--provider", "alpha", "enriched", env=env)
+            self.assertEqual(alpha.returncode, 0, alpha.stderr)
+            self.assertIn("Alpha Job", alpha.stdout)
+            self.assertNotIn("Beta Job", alpha.stdout)
+
+            beta = shobr("--provider", "beta", "enriched", env=env)
+            self.assertEqual(beta.returncode, 0, beta.stderr)
+            self.assertIn("Beta Job", beta.stdout)
+            self.assertNotIn("Alpha Job", beta.stdout)
+
+    def test_location_rule_honors_provider_capability(self) -> None:
+        """Boards without locations are not rejected for an empty location."""
+        specs = {
+            "noloc": {"has_location": False, "has_company": False},
+            "loc": {"has_location": True, "has_company": False},
+        }
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_discovery(data_home, "noloc", "1", location="")
+            seed_provider_discovery(data_home, "loc", "1", location="")
+            seed_provider_enrichment(
+                data_home,
+                "noloc",
+                "1",
+                location="",
+                location_type=None,
+            )
+            seed_provider_enrichment(
+                data_home,
+                "loc",
+                "1",
+                location="",
+                location_type=None,
+            )
+            env = fake_provider_env(data_home, specs)
+
+            no_location = shobr("--provider", "noloc", "discovered", env=env)
+            self.assertEqual(no_location.returncode, 0, no_location.stderr)
+            self.assertNotIn("REJECTED", no_location.stdout)
+
+            with_location = shobr("--provider", "loc", "discovered", env=env)
+            self.assertEqual(with_location.returncode, 0, with_location.stderr)
+            self.assertIn("REJECTED", with_location.stdout)
+            self.assertIn("location", with_location.stdout)
+
+            no_location = shobr("--provider", "noloc", "enriched", env=env)
+            self.assertEqual(no_location.returncode, 0, no_location.stderr)
+            self.assertNotIn("REJECTED", no_location.stdout)
+
+            with_location = shobr("--provider", "loc", "enriched", env=env)
+            self.assertEqual(with_location.returncode, 0, with_location.stderr)
+            self.assertIn("REJECTED", with_location.stdout)
+
+    def test_cross_provider_recent_application_cooldown(self) -> None:
+        """A recent application on one board rejects the same company on another."""
+        text = CONFIG_DEFAULT.replace(
+            "# reject_recent_application_days = 90",
+            "reject_recent_application_days = 30",
+        )
+        with TestDataHome() as data_home:
+            seed_test_config(data_home, text)
+            seed_provider_discovery(
+                data_home,
+                "alpha",
+                "1",
+                company="Acme",
+                fetched_at="2026-01-10T00:00:00+00:00",
+            )
+            seed_provider_discovery(
+                data_home,
+                "beta",
+                "2",
+                company="Acme",
+                fetched_at="2026-01-10T00:00:00+00:00",
+            )
+            seed_provider_discovery(
+                data_home,
+                "beta",
+                "3",
+                company="",
+                fetched_at="2026-01-10T00:00:00+00:00",
+            )
+            seed_provider_enrichment(
+                data_home,
+                "alpha",
+                "1",
+                company="Acme",
+                fetched_at="2026-01-01T00:00:00+00:00",
+            )
+            seed_provider_tracking(
+                data_home,
+                "alpha",
+                "1",
+                tracked_at="2026-01-02T00:00:00+00:00",
+            )
+            env = fake_provider_env(data_home, {"alpha": {}, "beta": {}})
+
+            result = shobr("--provider", "beta", "discovered", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            flat = _flat(result.stdout)
+            self.assertIn("[Acme] (REJECTED: recent application at same company)", flat)
+            self.assertIn("Last Applied To Same Company: 2026-01-02 (1)", flat)
+            self.assertNotIn("[3] (REJECTED", flat)
+
+    def test_screening_rows_are_namespaced_by_provider(self) -> None:
+        """Screening projections filter by provider before display."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_enrichment(data_home, "alpha", "1", title="Alpha Job")
+            seed_provider_enrichment(data_home, "beta", "1", title="Beta Job")
+            seed_provider_screening(
+                data_home,
+                "alpha",
+                "1",
+                score=5,
+                reasoning="alpha pass",
+            )
+            seed_provider_screening(
+                data_home,
+                "beta",
+                "1",
+                score=1,
+                reasoning="beta skip",
+            )
+            env = fake_provider_env(data_home, {"alpha": {}, "beta": {}})
+
+            alpha = shobr("--provider", "alpha", "screened", env=env)
+            self.assertEqual(alpha.returncode, 0, alpha.stderr)
+            self.assertIn("Alpha Job", alpha.stdout)
+            self.assertIn("alpha pass", alpha.stdout)
+            self.assertNotIn("Beta Job", alpha.stdout)
+
+            beta = shobr("--provider", "beta", "screened", env=env)
+            self.assertEqual(beta.returncode, 0, beta.stderr)
+            self.assertIn("Beta Job", beta.stdout)
+            self.assertIn("beta skip", beta.stdout)
+            self.assertNotIn("Alpha Job", beta.stdout)
+
+    def test_companyless_screening_editor_template(self) -> None:
+        """The editor template omits missing company and empty descriptions."""
+        sparse = {
+            "sparse": {
+                "display_name": "Sparse Board",
+                "has_company": False,
+                "has_location": False,
+            }
+        }
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_enrichment(
+                data_home,
+                "sparse",
+                "1",
+                company="",
+                location="",
+                location_type=None,
+                employment_type=None,
+                company_description="",
+            )
+            env = fake_provider_env(data_home, sparse)
+            template_capture = data_home.path / "screen-template.md"
+            env_editor = add_editor_to_env(
+                env,
+                "SHOBR_SCORE: 4\nSHOBR_REASONING: sparse ok\n",
+                capture_to=template_capture,
+            )
+            result = shobr("--provider", "sparse", "screen", "1", env=env_editor)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            template = template_capture.read_text()
+            self.assertIn("- 1", template)
+            self.assertIn("- Test Engineer", template)
+            self.assertNotIn("None", template)
+            self.assertNotIn("## Company Description", template)
+            self.assertNotIn("()", template)
+            self.assertIn("## Job Description", template)
+
+    def test_no_tailoring_profile_and_tailor_refusal(self) -> None:
+        """Direct-track boards hide tailor files and refuse tailor commands."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            env = fake_provider_env(
+                data_home,
+                {"notail": {"display_name": "No Tailor", "supports_tailoring": False}},
+            )
+            profile = shobr("--provider", "notail", "profile", env=env)
+            self.assertEqual(profile.returncode, 0, profile.stderr)
+            self.assertIn("user-detail.md", profile.stdout)
+            self.assertNotIn("resume-guide.md", profile.stdout)
+            self.assertIn("shobr --provider notail setup", profile.stdout)
+
+            tailor = shobr("--provider", "notail", "tailor", "1", env=env)
+            self.assertNotEqual(tailor.returncode, 0)
+            self.assertIn("has no tailoring", tailor.stderr)
+            tailor_next = shobr("--provider", "notail", "tailor-next", env=env)
+            self.assertNotEqual(tailor_next.returncode, 0)
+            self.assertIn("has no tailoring", tailor_next.stderr)
+
+    def test_no_tailoring_track_and_review_flow(self) -> None:
+        """Direct-track boards require pursue and review without package sections."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_enrichment(
+                data_home,
+                "notail",
+                "1",
+                company="",
+                location="",
+                location_type=None,
+                company_description="",
+            )
+            env = fake_provider_env(
+                data_home,
+                {
+                    "notail": {
+                        "display_name": "No Tailor",
+                        "supports_tailoring": False,
+                        "has_company": False,
+                        "has_location": False,
+                    }
+                },
+            )
+            seed_provider_screening(
+                data_home,
+                "notail",
+                "1",
+                score=1,
+                reasoning="skip",
+            )
+            blocked = shobr("--provider", "notail", "track", "1", "applied", env=env)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("not marked pursue", blocked.stderr)
+
+            seed_provider_screening(
+                data_home,
+                "notail",
+                "1",
+                score=4,
+                reasoning="pursue",
+                scored_at="2026-01-02T00:00:00+00:00",
+            )
+            review_next = shobr("--provider", "notail", "review-next", env=env)
+            self.assertEqual(review_next.returncode, 0, review_next.stderr)
+            self.assertIn("shobr --provider notail track 1 applied", review_next.stdout)
+            self.assertNotIn("--- RESUME ---", review_next.stdout)
+            self.assertNotIn("Slug:", review_next.stdout)
+
+            review = shobr("--provider", "notail", "review", "1", env=env)
+            self.assertEqual(review.returncode, 0, review.stderr)
+            self.assertIn("[1]", review.stdout)
+            self.assertIn("Or through No Tailor:", review.stdout)
+            self.assertIn("Tracking:", review.stdout)
+            self.assertIn("UNTRACKED", review.stdout)
+            self.assertNotIn("--- RESUME ---", review.stdout)
+            self.assertNotIn("Slug:", review.stdout)
+
+            tracked = shobr("--provider", "notail", "track", "1", "applied", env=env)
+            self.assertEqual(tracked.returncode, 0, tracked.stderr)
+
+    def test_no_tailoring_status_and_next_flow(self) -> None:
+        """Status and next skip tailoring for direct-track boards."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_discovery(data_home, "notail", "1")
+            seed_provider_discovery(data_home, "beta", "2")
+            seed_provider_enrichment(data_home, "notail", "1")
+            seed_provider_enrichment(data_home, "beta", "2")
+            seed_provider_screening(data_home, "notail", "1", score=4)
+            seed_provider_screening(data_home, "beta", "2", score=4)
+            env = fake_provider_env(
+                data_home,
+                {
+                    "notail": {"supports_tailoring": False},
+                    "beta": {"supports_tailoring": False},
+                },
+            )
+
+            status = shobr("--provider", "notail", "status", env=env)
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertNotIn("TAILORING", status.stdout)
+            self.assertNotIn("Pending Tailoring:", status.stdout)
+            self.assertIn("Pending Review:", status.stdout)
+            self.assertRegex(status.stdout, r"Total Leads Found:\s+1\b")
+
+            next_result = shobr("--provider", "notail", "next", env=env)
+            self.assertEqual(next_result.returncode, 0, next_result.stderr)
+            self.assertIn("shobr --provider notail track 1 applied", next_result.stdout)
+            self.assertNotIn("Tailor oldest", next_result.stdout)
+
+    def test_fake_provider_discover_and_enrich_through_browser(self) -> None:
+        """A temporary provider runs through discovery and enrichment end to end."""
+        pages: dict[str, str | list[str]] = {
+            "/search": (
+                "<html><body><main>"
+                '<div class="fake-card" data-id="1" data-title="Test Engineer" '
+                'data-company="" data-location=""></div>'
+                "</main></body></html>"
+            ),
+            "/jobs/1": (
+                "<html><body>"
+                '<div id="fake-title">Test Engineer</div>'
+                '<div id="fake-description"><p>Test job.</p></div>'
+                '<div id="fake-apply"><a href="https://apply.example.test/1">Apply</a></div>'
+                "</body></html>"
+            ),
+            "/jobs/2": (
+                "<html><body>"
+                '<div id="fake-title">Manual Job</div>'
+                '<div id="fake-description"><p>Manual job.</p></div>'
+                '<div id="fake-apply"><a href="https://apply.example.test/2">Apply</a></div>'
+                "</body></html>"
+            ),
+        }
+        profile = f"test-{os.getpid()}-fake-provider"
+        with TestDataHome() as data_home:
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT
+                + "\n[providers.browserfake]\n"
+                + f'beachpatrol_profile = "{profile}"\n'
+                + f'beachpatrol_browser = "{TEST_BROWSER}"\n',
+            )
+            specs = {
+                "browserfake": {
+                    "display_name": "Browser Fake",
+                    "supports_tailoring": False,
+                    "has_company": False,
+                    "has_location": False,
+                }
+            }
+            env_base = fake_provider_env(data_home, specs)
+            install_fake_provider_commands(data_home, "browserfake")
+            with FakeLinkedInServer(pages) as server:
+                env = {
+                    key: value
+                    for key, value in {
+                        **env_base,
+                        "SHOBR_FAKE_BASE_URL": server.url,
+                    }.items()
+                    if key
+                    not in (
+                        "SHOBR_BEACHPATROL_BROWSER",
+                        "SHOBR_BEACHPATROL_PROFILE",
+                    )
+                }
+                with TestBeachpatrolInstance(env, profile):
+                    discovered = shobr("--provider", "browserfake", "discover", env=env)
+                    self.assertEqual(discovered.returncode, 0, discovered.stderr)
+                    self.assertIn("Performing Browser Fake job search", discovered.stdout)
+
+                    enriched = shobr(
+                        "--provider",
+                        "browserfake",
+                        "enrich",
+                        "1",
+                        env=env,
+                    )
+                    self.assertEqual(enriched.returncode, 0, enriched.stderr)
+                    self.assertIn("[1]", enriched.stdout)
+                    self.assertIn("Or through Browser Fake:", enriched.stdout)
+
+                    events = [
+                        json.loads(line)
+                        for line in (data_home.shobr_data / "discovery" / "events.jsonl")
+                        .read_text()
+                        .splitlines()
+                        if line
+                    ]
+                    self.assertEqual(events[-1]["source"]["query"]["provider"], "browserfake")
+                    self.assertEqual(
+                        events[-1]["source"]["query"]["url"],
+                        f"{server.url}/search",
+                    )
+                    self.assertEqual(events[-1]["rows"][0]["provider"], "browserfake")
+                    self.assertEqual(
+                        events[-1]["rows"][0]["posting_url"],
+                        f"{server.url}/jobs/1",
+                    )
+
+                    enrichment_events = [
+                        json.loads(line)
+                        for line in (data_home.shobr_data / "enrichment" / "events.jsonl")
+                        .read_text()
+                        .splitlines()
+                        if line
+                    ]
+                    self.assertEqual(enrichment_events[-1]["provider"], "browserfake")
+                    self.assertEqual(enrichment_events[-1]["posting_id"], "1")
+                    self.assertEqual(
+                        enrichment_events[-1]["posting_url"],
+                        f"{server.url}/jobs/1",
+                    )
+
+                    manual = shobr(
+                        "--provider",
+                        "browserfake",
+                        "discover",
+                        f"{server.url}/jobs/2",
+                        env=env,
+                    )
+                    self.assertEqual(manual.returncode, 0, manual.stderr)
+                    self.assertIn("Manual Job", manual.stdout)
+                    manual_events = [
+                        json.loads(line)
+                        for line in (data_home.shobr_data / "discovery" / "events.jsonl")
+                        .read_text()
+                        .splitlines()
+                        if line
+                    ]
+                    self.assertEqual(manual_events[-1]["rows"][0]["posting_id"], "2")
+                    self.assertEqual(
+                        manual_events[-1]["rows"][0]["posting_url"],
+                        f"{server.url}/jobs/2",
+                    )
+
+
 def _test_method_names() -> list[str]:
-    """TestCLI method names in unittest's default (alphabetical) order."""
-    return sorted(name for name in dir(TestCLI) if name.startswith("test_"))
+    """Every test id in unittest's default (alphabetical) order."""
+    return sorted(
+        f"{cls.__name__}.{name}"
+        for cls in (TestCLI, TestProviderCLI)
+        for name in dir(cls)
+        if name.startswith("test_")
+    )
 
 
 def _run_test_ids(ids: list[str], keep_outputs: bool) -> tuple[int, str]:
@@ -5819,7 +6589,7 @@ def _run_test_ids(ids: list[str], keep_outputs: bool) -> tuple[int, str]:
         env["SHOBR_KEEP_OUTPUTS"] = "1"
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "unittest", *(f"test.TestCLI.{name}" for name in ids)],
+            [sys.executable, "-m", "unittest", *(f"test.{test_id}" for test_id in ids)],
             cwd=ROOT,
             env=env,
             capture_output=True,
