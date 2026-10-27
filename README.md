@@ -197,6 +197,10 @@ Easy Apply links. Done one at a time to pace requests and avoid rate-limits.
   - Prints all enriched jobs.
 - **`shobr enrich-next`**
   - Fetches the detail page for the oldest non-enriched lead.
+- **`shobr enrich-all`**
+  - Fetches every pending lead, waiting 10 seconds between detail pages by
+    default. Pass `--delay SECONDS` to change the wait, with a minimum of 1
+    second. Stops at the first failure.
 - **`shobr enrich <posting_id>`**
   - Fetches a specific job.
 

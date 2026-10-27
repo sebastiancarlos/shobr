@@ -6026,6 +6026,14 @@ class TestProviderCLI(unittest.TestCase):
             self.assertNotEqual(no_store.returncode, 0)
             self.assertIn("shobr --provider alpha discover", no_store.stderr)
 
+            help_result = shobr("enrich-all", "--help", env=env)
+            self.assertEqual(help_result.returncode, 0, help_result.stderr)
+            self.assertIn("default: 10", help_result.stdout)
+
+            bad_delay = shobr("--provider", "alpha", "enrich-all", "--delay", "0", env=env)
+            self.assertNotEqual(bad_delay.returncode, 0)
+            self.assertIn("delay must be at least 1 second", bad_delay.stderr)
+
     def test_provider_config_overrides_profile_paths(self) -> None:
         """profiles and CV paths come from the active provider section."""
         text = (
@@ -6445,12 +6453,14 @@ class TestProviderCLI(unittest.TestCase):
             self.assertIn("shobr --provider notail track 1 applied", next_result.stdout)
             self.assertNotIn("Tailor oldest", next_result.stdout)
 
-    def test_fake_provider_discover_and_enrich_through_browser(self) -> None:
-        """A temporary provider runs through discovery and enrichment end to end."""
+    def test_fake_provider_discover_and_enrich_all_through_browser(self) -> None:
+        """A temporary provider runs through discovery and bulk enrichment."""
         pages: dict[str, str | list[str]] = {
             "/search": (
                 "<html><body><main>"
                 '<div class="fake-card" data-id="1" data-title="Test Engineer" '
+                'data-company="" data-location=""></div>'
+                '<div class="fake-card" data-id="2" data-title="Second Engineer" '
                 'data-company="" data-location=""></div>'
                 "</main></body></html>"
             ),
@@ -6463,9 +6473,16 @@ class TestProviderCLI(unittest.TestCase):
             ),
             "/jobs/2": (
                 "<html><body>"
+                '<div id="fake-title">Second Engineer</div>'
+                '<div id="fake-description"><p>Second job.</p></div>'
+                '<div id="fake-apply"><a href="https://apply.example.test/2">Apply</a></div>'
+                "</body></html>"
+            ),
+            "/jobs/3": (
+                "<html><body>"
                 '<div id="fake-title">Manual Job</div>'
                 '<div id="fake-description"><p>Manual job.</p></div>'
-                '<div id="fake-apply"><a href="https://apply.example.test/2">Apply</a></div>'
+                '<div id="fake-apply"><a href="https://apply.example.test/3">Apply</a></div>'
                 "</body></html>"
             ),
         }
@@ -6509,12 +6526,17 @@ class TestProviderCLI(unittest.TestCase):
                     enriched = shobr(
                         "--provider",
                         "browserfake",
-                        "enrich",
+                        "enrich-all",
+                        "--delay",
                         "1",
                         env=env,
                     )
                     self.assertEqual(enriched.returncode, 0, enriched.stderr)
-                    self.assertIn("[1]", enriched.stdout)
+                    self.assertIn("Enriching 1/2", enriched.stdout)
+                    self.assertIn("Enriching 2/2", enriched.stdout)
+                    self.assertIn("Enriched 2 leads.", enriched.stdout)
+                    self.assertIn("Test Engineer", enriched.stdout)
+                    self.assertIn("Second Engineer", enriched.stdout)
                     self.assertIn("Or through Browser Fake:", enriched.stdout)
 
                     events = [
@@ -6529,10 +6551,20 @@ class TestProviderCLI(unittest.TestCase):
                         events[-1]["source"]["query"]["url"],
                         f"{server.url}/search",
                     )
-                    self.assertEqual(events[-1]["rows"][0]["provider"], "browserfake")
                     self.assertEqual(
-                        events[-1]["rows"][0]["posting_url"],
-                        f"{server.url}/jobs/1",
+                        {row["posting_id"] for row in events[-1]["rows"]},
+                        {"1", "2"},
+                    )
+                    self.assertEqual(
+                        {row["provider"] for row in events[-1]["rows"]},
+                        {"browserfake"},
+                    )
+                    self.assertEqual(
+                        {row["posting_url"] for row in events[-1]["rows"]},
+                        {
+                            f"{server.url}/jobs/1",
+                            f"{server.url}/jobs/2",
+                        },
                     )
 
                     enrichment_events = [
@@ -6542,18 +6574,20 @@ class TestProviderCLI(unittest.TestCase):
                         .splitlines()
                         if line
                     ]
-                    self.assertEqual(enrichment_events[-1]["provider"], "browserfake")
-                    self.assertEqual(enrichment_events[-1]["posting_id"], "1")
                     self.assertEqual(
-                        enrichment_events[-1]["posting_url"],
-                        f"{server.url}/jobs/1",
+                        {row["posting_id"] for row in enrichment_events},
+                        {"1", "2"},
+                    )
+                    self.assertEqual(
+                        {row["provider"] for row in enrichment_events},
+                        {"browserfake"},
                     )
 
                     manual = shobr(
                         "--provider",
                         "browserfake",
                         "discover",
-                        f"{server.url}/jobs/2",
+                        f"{server.url}/jobs/3",
                         env=env,
                     )
                     self.assertEqual(manual.returncode, 0, manual.stderr)
@@ -6565,10 +6599,106 @@ class TestProviderCLI(unittest.TestCase):
                         .splitlines()
                         if line
                     ]
-                    self.assertEqual(manual_events[-1]["rows"][0]["posting_id"], "2")
+                    self.assertEqual(manual_events[-1]["rows"][0]["posting_id"], "3")
                     self.assertEqual(
                         manual_events[-1]["rows"][0]["posting_url"],
-                        f"{server.url}/jobs/2",
+                        f"{server.url}/jobs/3",
+                    )
+
+    def test_enrich_all_skips_already_enriched_leads(self) -> None:
+        """Bulk enrichment does nothing when every actionable lead is enriched."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_discovery(data_home, "alpha", "1")
+            seed_provider_enrichment(data_home, "alpha", "1")
+            env = fake_provider_env(data_home, {"alpha": {}})
+
+            result = shobr("--provider", "alpha", "enrich-all", "--delay", "1", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("no leads to enrich", result.stdout)
+
+    def test_enrich_all_stops_on_first_failure(self) -> None:
+        """Bulk enrichment leaves later leads untouched after a parse failure."""
+        pages: dict[str, str | list[str]] = {
+            "/jobs/4": (
+                "<html><body>"
+                '<div id="fake-title">Broken Job</div>'
+                '<div id="fake-description"></div>'
+                '<div id="fake-apply"><a href="https://apply.example.test/4">Apply</a></div>'
+                "</body></html>"
+            ),
+            "/jobs/5": (
+                "<html><body>"
+                '<div id="fake-title">Later Job</div>'
+                '<div id="fake-description"><p>Later job.</p></div>'
+                '<div id="fake-apply"><a href="https://apply.example.test/5">Apply</a></div>'
+                "</body></html>"
+            ),
+        }
+        profile = f"test-{os.getpid()}-enrich-all-failure"
+        with TestDataHome() as data_home:
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT
+                + "\n[providers.browserfake]\n"
+                + f'beachpatrol_profile = "{profile}"\n'
+                + f'beachpatrol_browser = "{TEST_BROWSER}"\n',
+            )
+            seed_provider_discovery(
+                data_home,
+                "browserfake",
+                "4",
+                title="Broken Job",
+                fetched_at="2026-01-01T00:00:00+00:00",
+            )
+            seed_provider_discovery(
+                data_home,
+                "browserfake",
+                "5",
+                title="Later Job",
+                fetched_at="2026-01-02T00:00:00+00:00",
+            )
+            env_base = fake_provider_env(
+                data_home,
+                {
+                    "browserfake": {
+                        "display_name": "Browser Fake",
+                        "supports_tailoring": False,
+                        "has_company": False,
+                        "has_location": False,
+                    }
+                },
+            )
+            install_fake_provider_commands(data_home, "browserfake")
+            with FakeLinkedInServer(pages) as server:
+                env = {
+                    key: value
+                    for key, value in {
+                        **env_base,
+                        "SHOBR_FAKE_BASE_URL": server.url,
+                    }.items()
+                    if key
+                    not in (
+                        "SHOBR_BEACHPATROL_BROWSER",
+                        "SHOBR_BEACHPATROL_PROFILE",
+                    )
+                }
+                with TestBeachpatrolInstance(env, profile):
+                    result = shobr(
+                        "--provider",
+                        "browserfake",
+                        "enrich-all",
+                        "--delay",
+                        "1",
+                        env=env,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("enrich-all stopped", result.stderr)
+                    self.assertIn("posting 4", result.stderr)
+                    self.assertIn("parsed no description", result.stderr)
+                    self.assertNotIn("Later Job", result.stdout)
+                    self.assertFalse(
+                        (data_home.shobr_data / "enrichment" / "events.jsonl").exists()
                     )
 
 
