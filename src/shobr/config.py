@@ -38,6 +38,7 @@ class Config(TypedDict):
     beachpatrol_browser: str
     stale_after_days: int
     reject_recent_application_days: int
+    auto_skip_llm_max: int
     providers: dict[str, dict[str, object]]
 
 
@@ -153,6 +154,9 @@ def _parse_config(data: dict) -> Config:
 
     raw_stale = _nonneg_int(data, "stale_after_days", 2)
     raw_cooldown = _nonneg_int(data, "reject_recent_application_days", 0)
+    raw_auto_skip = _nonneg_int(data, "auto_skip_llm_max", 0)
+    if raw_auto_skip > 5:
+        raise ShobrError("config.toml: 'auto_skip_llm_max' must be between 0 and 5")
 
     raw_dir = data.get("cv_toolchain_dir")
     if not isinstance(raw_dir, str) or not raw_dir:
@@ -204,6 +208,7 @@ def _parse_config(data: dict) -> Config:
         "beachpatrol_browser": raw_browser,
         "stale_after_days": raw_stale,
         "reject_recent_application_days": raw_cooldown,
+        "auto_skip_llm_max": raw_auto_skip,
         "providers": providers,
     }
 

@@ -48,6 +48,10 @@ stale_after_days = 2
 # withdrawn) within this many days of the lead's last sighting. 0 disables.
 # reject_recent_application_days = 90
 
+# Auto-skip a lead whose LLM score is at or below this, without a human
+# review. 0 disables (the default).
+# auto_skip_llm_max = 1
+
 # Geo name to LinkedIn geoId map, the source of truth for geo targets above.
 # Obtain ids manually: search the place on LinkedIn Jobs and copy geoId=
 # from the resulting URL. Beware precision: LinkedIn often has several ids

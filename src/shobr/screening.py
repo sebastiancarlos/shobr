@@ -15,6 +15,7 @@ from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
 from .config import (
     CONFIG_PATH,
     load_config,
+    load_provider_config,
     resolve_main_cv_path,
     resolve_profile_dir,
     scaffold_config,
@@ -262,7 +263,7 @@ class _AIReview(_ScreeningReview):
 class ReviewDecision(StrEnum):
     """Screening verdict for a posting.
 
-    PENDING until a human review exists, else PURSUE/SKIP.
+    PENDING until a human review exists, unless the LLM veto auto-skips it.
     """
 
     PENDING = "pending"
@@ -292,15 +293,16 @@ class _ScreenedStore(TypedDict):
     rows: dict[str, ScreeningRow]  # keyed by provider/posting_id
 
 
+def _auto_skip_max(provider: str) -> int:
+    """The provider's LLM auto-skip score ceiling (0 disables)."""
+    return load_provider_config(provider)["auto_skip_llm_max"]
+
+
 def _screening_decision(human: _HumanReview | None, ai: _AIReview | None) -> ReviewDecision:
     """Derive a posting's screening decision from its reviews."""
     if human is None:
-        if (
-            _AUTO_PURSUE_AI_MIN is not None
-            and ai is not None
-            and ai["score"] >= _AUTO_PURSUE_AI_MIN
-        ):
-            return ReviewDecision.PURSUE
+        if ai is not None and ai["score"] <= _auto_skip_max(ai["provider"]):
+            return ReviewDecision.SKIP
         return ReviewDecision.PENDING
     if human["score"] >= _HUMAN_PURSUE_MIN:
         return ReviewDecision.PURSUE
@@ -686,6 +688,7 @@ def oldest_missing_review(
     """Get oldest enriched row, which passes, with no review of `kind` yet.
 
     AI scoring is refused once a human reviewed, so it's never returned.
+    Auto-skipped rows are not returned for human review.
     """
     for row in rows.values():
         if not row["actionable"]:
@@ -697,6 +700,8 @@ def oldest_missing_review(
             if sr[kind] is not None:
                 continue
             if kind == "ai" and sr["human"] is not None:
+                continue
+            if kind == "human" and sr["decision"] == ReviewDecision.SKIP:
                 continue
         return row
     return None

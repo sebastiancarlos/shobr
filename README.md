@@ -387,6 +387,17 @@ reject_recent_application_days = 90
 Reject leads at companies with already tracked application, within this many
 days of the lead's last sighting.
 
+#### `auto_skip_llm_max` (optional integer, default `0`)
+
+```toml
+auto_skip_llm_max = 1
+```
+
+Leads whose LLM score is at or below this are marked "skip" without waiting
+for a human review. `0` disables it. Useful when an LLM score of `1` (a
+deal-breaker veto) is reliable. A human review still wins, when provided for
+example via `shobr screen <posting_id> ...`
+
 #### `[reject_title]` (optional table, label = Python regex)
 
 ```toml

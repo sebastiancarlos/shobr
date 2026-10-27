@@ -73,10 +73,18 @@ def _pending_enrichment(leads: list[StoredJob], enriched_ids: set[str]) -> int:
     return sum(1 for row in leads if row["actionable"] and row["posting_id"] not in enriched_ids)
 
 
-def _pending_screening(enriched: list[EnrichedRow], human_reviewed_ids: set[str]) -> int:
-    """Passing enriched rows with no human review yet."""
+def _needs_human_review(sr: ScreeningRow | None) -> bool:
+    """Whether a screening row still waits on a human decision."""
+    return sr is None or (sr["human"] is None and sr["decision"] == ReviewDecision.PENDING)
+
+
+def _pending_screening(enriched: list[EnrichedRow], screened: dict[str, ScreeningRow]) -> int:
+    """Passing enriched rows awaiting a human screening decision."""
     return sum(
-        1 for row in enriched if row["actionable"] and row["posting_id"] not in human_reviewed_ids
+        1
+        for row in enriched
+        if row["actionable"]
+        and _needs_human_review(screened.get(store_key(row["provider"], row["posting_id"])))
     )
 
 
@@ -290,7 +298,7 @@ def print_status() -> None:
                     sum(1 for row in enriched if not row["actionable"]),
                     RED,
                 ),
-                ("Pending Screening:", _pending_screening(enriched, human_reviewed), GREEN),
+                ("Pending Screening:", _pending_screening(enriched, screened), GREEN),
             ],
         ),
         (
@@ -366,7 +374,7 @@ def _run_next() -> None:
             return
 
     human_reviewed = {sr["posting_id"] for sr in screened.values() if sr["human"] is not None}
-    if pending := _pending_screening(enriched, human_reviewed):
+    if pending := _pending_screening(enriched, screened):
         ai_reviewed = {sr["posting_id"] for sr in screened.values() if sr["ai"] is not None}
         lacking = _pending_ai_screening(enriched, human_reviewed, ai_reviewed)
         extra = f" ({lacking} lacking LLM screening)" if lacking else ""
@@ -375,7 +383,7 @@ def _run_next() -> None:
             row
             for row in enriched
             if row["actionable"]
-            and row["posting_id"] not in human_reviewed
+            and _needs_human_review(screened.get(store_key(row["provider"], row["posting_id"])))
             and is_stale(row, threshold)
         ]
         stale_bit = f" ({len(stale_rows)} stale)" if stale_rows else ""
@@ -482,7 +490,7 @@ def _run_next_for_id(posting_id: str) -> None:
         raise ShobrError(f"posting {posting_id} did not pass the pre-filter ({reason})")
 
     sr = screened.get(key)
-    if sr is None or sr["human"] is None:
+    if sr is None or _needs_human_review(sr):
         human_reviewed = {
             review["posting_id"] for review in screened.values() if review["human"] is not None
         }

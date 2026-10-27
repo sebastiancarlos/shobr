@@ -2065,6 +2065,23 @@ class TestCLI(unittest.TestCase):
                 self.assertNotIn("Traceback", result.stderr)
                 self.assertIn("reject_recent_application_days", result.stderr)
 
+    def test_auto_skip_config_validation(self) -> None:
+        """auto_skip_llm_max rejects out-of-range and non-integer values."""
+        for raw in ("6", '"x"', "-1"):
+            with TestDataHome() as data_home:
+                seed_minimal_lead(data_home)
+                seed_test_config(
+                    data_home,
+                    CONFIG_DEFAULT.replace(
+                        "stale_after_days = 2",
+                        f"stale_after_days = 2\nauto_skip_llm_max = {raw}",
+                    ),
+                )
+                result = shobr("discovered", env=data_home.env)
+                self.assertNotEqual(result.returncode, 0, raw)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertIn("auto_skip_llm_max", result.stderr)
+
     def test_cooldown_anchors_on_first_application(self) -> None:
         """A later ghosted transition does not restart the sibling cooldown."""
         with TestDataHome() as data_home:
@@ -3682,6 +3699,57 @@ class TestCLI(unittest.TestCase):
             result = shobr("screen-next", env=env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("no leads to screen", result.stdout)
+
+    def test_auto_skip_llm_review(self) -> None:
+        """auto_skip_llm_max skips an LLM veto without a human review;
+        a human review still overrides it."""
+        with TestDataHome(name="auto-skip") as data_home:
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_minimal_lead(data_home, posting_id="1234567890", fetched_at=now)
+            seed_provider_screening(data_home, "linkedin", "1234567890", score=1, kind="ai_review")
+            env = {k: v for k, v in data_home.env.items() if k not in ("VISUAL", "EDITOR")}
+
+            # Disabled by default: the LLM veto stays pending human review.
+            result = shobr("screened", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("  - Decision: PENDING", result.stdout)
+
+            result = shobr("status", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(_strip_ansi(result.stdout), r"Pending Human Review:\s+1")
+
+            result = shobr("screen-next", env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("1234567890", result.stdout)
+            self.assertIn("no editor set", result.stderr)
+
+            # Enabled for the provider: the veto becomes a skip on its own.
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT + "\n[providers.linkedin]\nauto_skip_llm_max = 1\n",
+            )
+            result = shobr("screened", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(
+                "1 screened (0 pursue, 1 skip, 0 lacking LLM review, 0 pending human review)",
+                result.stdout,
+            )
+            self.assertIn("  - Decision: SKIP", result.stdout)
+
+            result = shobr("status", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(_strip_ansi(result.stdout), r"Pending Human Review:\s+0")
+            self.assertRegex(_strip_ansi(result.stdout), r"Skipped:\s+1")
+
+            result = shobr("screen-next", env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("no leads to screen", result.stdout)
+
+            # An explicit human review overrides the automatic skip.
+            result = shobr("screen", "1234567890", "4", "--reason", "reconsidered", env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = shobr("screened", env=env)
+            self.assertIn("  - Decision: PURSUE", result.stdout)
 
     def test_screen_llm_print_prompt(self) -> None:
         """screen-llm --print-prompt prints the built scoring prompt."""
@@ -6124,6 +6192,28 @@ class TestProviderCLI(unittest.TestCase):
             not_table = shobr("--provider", "alpha", "status", env=env)
             self.assertNotEqual(not_table.returncode, 0)
             self.assertIn("must be a table", not_table.stderr)
+
+    def test_auto_skip_is_per_provider(self) -> None:
+        """auto_skip_llm_max only applies to the provider section that sets it."""
+        with TestDataHome() as data_home:
+            env = fake_provider_env(data_home, {"alpha": {}, "beta": {}})
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT
+                + "\n[providers.alpha]\nauto_skip_llm_max = 1\n"
+                + "\n[providers.beta]\nauto_skip_llm_max = 0\n",
+            )
+            for provider in ("alpha", "beta"):
+                seed_provider_enrichment(data_home, provider, "1")
+                seed_provider_screening(data_home, provider, "1", score=1, kind="ai_review")
+
+            alpha = shobr("--provider", "alpha", "screened", env=env)
+            self.assertEqual(alpha.returncode, 0, alpha.stderr)
+            self.assertIn("  - Decision: SKIP", alpha.stdout)
+
+            beta = shobr("--provider", "beta", "screened", env=env)
+            self.assertEqual(beta.returncode, 0, beta.stderr)
+            self.assertIn("  - Decision: PENDING", beta.stdout)
 
     def test_discovery_rows_are_namespaced_by_provider(self) -> None:
         """The same posting id on two boards is two independent leads."""
