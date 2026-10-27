@@ -3,7 +3,9 @@
 import re
 import subprocess
 import sys
+import time
 from collections import Counter
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import TypedDict, cast
 
@@ -221,15 +223,19 @@ def get_enriched_rows() -> dict[str, EnrichedRow]:
     return project_enrichment(current_provider().name)["rows"]
 
 
-def _next_lead_to_enrich(leads: DiscoveredStore, enriched: EnrichedStore) -> StoredJob | None:
-    """The oldest lead not yet enriched."""
+def _pending_leads(leads: DiscoveredStore, enriched: EnrichedStore) -> Iterator[StoredJob]:
+    """Actionable leads not yet enriched, oldest first."""
     for row in reversed(leads["rows"]):
         if not row["actionable"]:
             continue
         if store_key(row["provider"], row["posting_id"]) in enriched["rows"]:
             continue
-        return row
-    return None
+        yield row
+
+
+def _next_lead_to_enrich(leads: DiscoveredStore, enriched: EnrichedStore) -> StoredJob | None:
+    """The oldest lead not yet enriched."""
+    return next(_pending_leads(leads, enriched), None)
 
 
 def _strip_link_attributes(html: str) -> str:
@@ -408,17 +414,19 @@ def build_enrichment_event(
     }
 
 
-def _enrich_one(target: StoredJob) -> None:
+def _enrich_one(target: StoredJob) -> EnrichedRow:
     """Fetch and persist the detail for a single known lead."""
     provider = current_provider()
     nav_url = provider.nav_url(target["posting_id"], target["posting_url"])
     payload = cast(JobDetailPayload, beachmsg_json(provider.detail_command, nav_url))
     row = build_enrichment_event(target, payload, datetime.now(UTC))
     enriched = persist_event(DataKind.ENRICHMENT, row, project_enrichment)
+    enriched_row = enriched["rows"][store_key(target["provider"], target["posting_id"])]
 
-    print_enriched_row(enriched["rows"][store_key(target["provider"], target["posting_id"])])
+    print_enriched_row(enriched_row)
     print()
     print(f"wrote to {short_path(store_path(DataKind.ENRICHMENT))}")
+    return enriched_row
 
 
 def enrich_next() -> None:
@@ -434,6 +442,37 @@ def enrich_next() -> None:
         return
 
     _enrich_one(target)
+
+
+def enrich_all(delay: float) -> None:
+    """Fetch details for every pending lead, stopping at the first failure.
+
+    The delay is applied between fetches.
+    """
+    if delay < 1:
+        raise ShobrError("enrich-all delay must be at least 1 second")
+    require_events(DataKind.DISCOVERY)
+    provider = current_provider().name
+    leads = project_discovery(provider)
+    enriched = project_enrichment(provider)
+    pending = list(_pending_leads(leads, enriched))
+    if not pending:
+        print("no leads to enrich")
+        return
+
+    total = len(pending)
+    for index, target in enumerate(pending, start=1):
+        if index > 1 and delay:
+            time.sleep(delay)
+        print(f"Enriching {index}/{total}: {row_header(target)} ({target['title']})")
+        try:
+            row = _enrich_one(target)
+        except ShobrError as exc:
+            raise ShobrError(
+                f"enrich-all stopped at {row_header(target)}: {exc}", code=exc.code
+            ) from exc
+        enriched["rows"][store_key(row["provider"], row["posting_id"])] = row
+    print(f"Enriched {total} leads.")
 
 
 def enrich_posting_id(posting_id: str) -> None:
