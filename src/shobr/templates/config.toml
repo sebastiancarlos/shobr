@@ -6,6 +6,13 @@
 # CV Toolchain home
 cv_toolchain_dir = "~/shobr-resumes"
 
+# Profile documents directory (default: <config dir>/profile).
+# profile_dir = "~/.config/shobr/profile"
+
+# Explicit main CV used as the tailoring base. Defaults to
+# <cv_toolchain_dir>/resume.md.
+# main_cv_path = "~/shobr-resumes/resume.md"
+
 # beachpatrol browser profile holding the logged-in LinkedIn session.
 # The user MUST configure this.
 # beachpatrol_profile = "job-hunter"
@@ -13,7 +20,8 @@ cv_toolchain_dir = "~/shobr-resumes"
 # beachpatrol browser to use: "chromium" or "firefox".
 beachpatrol_browser = "chromium"
 
-# Job titles fed to LinkedIn search as an ORed keyword query.
+# Job titles fed to the search as an ORed keyword query. An empty list means
+# no keyword search: boards which support a plain listing then fetch it all.
 titles = ["Technical Lead", "Software Engineer", "Senior Software Engineer"]
 
 # Workplace types appended to the same search OR query.
@@ -49,7 +57,8 @@ stale_after_days = 2
 testville-city = "111111111"
 testville-dept = "222222222"
 
-# Reject titles which match the provided Python regex (matched in lowercase).
+# Reject titles which match the provided Python regex (matched in lowercase,
+# with accents folded).
 [reject_title]
 golang = "\\bgolang\\b"
 devops = "\\bdevops\\b"

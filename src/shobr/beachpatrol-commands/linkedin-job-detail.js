@@ -1,6 +1,6 @@
 export default async ({ context }, url) => {
   if (!url) {
-    throw new Error("usage: job-detail <url>");
+    throw new Error("usage: linkedin-job-detail <url>");
   }
 
   const page = await context.newPage();

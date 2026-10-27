@@ -1,5 +1,5 @@
 --- BEGIN JOB POSTING ---
-{title} at {company} ({pills})
+{title}{at_company}{pills_clause}
 
 {job_description}
 

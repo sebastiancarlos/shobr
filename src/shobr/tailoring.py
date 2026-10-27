@@ -19,9 +19,12 @@ from .core import (
     read_events,
     render_template,
     require_events,
+    row_header,
     same_company_line,
+    shobr_command,
     short_path,
     stage_line,
+    store_key,
     store_path,
 )
 from .cv_toolchain import (
@@ -40,6 +43,7 @@ from .enrichment import (
     staleness_tag,
     validity_tag,
 )
+from .providers.base import current_provider
 from .screening import (
     PROFILE_FILES,
     TAILOR_FILES,
@@ -61,6 +65,7 @@ class TailoringRow(TypedDict):
     """A posting's tailoring state as projected into tailoring.json."""
 
     posting_id: str
+    provider: str
     slug: str
     app_dir: str
     rewrites: int
@@ -74,7 +79,7 @@ class TailorEvent(TailoringRow):
 
 
 class TailoredStore(TypedDict):
-    """Projected packages keyed by posting id."""
+    """Projected packages keyed by provider/posting_id."""
 
     tailored_at: str | None
     rows: dict[str, TailoringRow]
@@ -92,15 +97,18 @@ def load_tailor_profile() -> TailoringProfile:
     return cast(TailoringProfile, load_files(PROFILE_FILES + TAILOR_FILES))
 
 
-def project_tailoring() -> TailoredStore:
+def project_tailoring(provider: str | None = None) -> TailoredStore:
     """Replay the tailoring events log."""
     if not (events := read_events(DataKind.TAILORING)):
         return {"tailored_at": None, "rows": {}}
     rows: dict[str, TailoringRow] = {}
-    for event in events:
-        pid = event["posting_id"]
-        rows[pid] = TailoringRow(
-            posting_id=pid,
+    for raw in events:
+        event = cast(TailorEvent, raw)
+        if provider is not None and event["provider"] != provider:
+            continue
+        rows[store_key(event["provider"], event["posting_id"])] = TailoringRow(
+            posting_id=event["posting_id"],
+            provider=event["provider"],
             slug=event["slug"],
             app_dir=event["app_dir"],
             rewrites=event["rewrites"],
@@ -115,28 +123,28 @@ def print_tailored() -> None:
     """Print every tailored package stored so far."""
     with paged():
         require_events(DataKind.TAILORING)
-        tailored = project_tailoring()
+        tailored = project_tailoring(current_provider().name)
 
         print(f"{BLUE}{len(tailored['rows'])}{RESET} tailored")
         print()
         assert event_log(DataKind.ENRICHMENT).exists(), "tailoring data implies enrichment data"
-        enriched = project_enrichment()
+        enriched = project_enrichment(current_provider().name)
         for row in tailored["rows"].values():
-            eref = enriched["rows"][row["posting_id"]]
-            print(f"{BOLD}[{eref['company']}] {row['posting_id']}{RESET}{validity_tag(eref)}")
+            eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
+            print(f"{BOLD}{row_header(eref)}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")
             print(f"  - Slug: {row['slug']}")
             print(f"  - {BOLD}Application dir:{RESET} {short_path(row['app_dir'])}")
             print(
                 f"  - Rewrites: {GREEN if row['rewrites'] == 0 else YELLOW}{row['rewrites']}{RESET}"
             )
-            print(stage_line(row["posting_id"], DataKind.TAILORING))
+            print(stage_line(row["provider"], row["posting_id"], DataKind.TAILORING))
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
             threshold = load_config()["stale_after_days"]
             print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
             built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
             print(f"  - Tailored At: {built}")
-            if line := same_company_line(eref["company"], row["posting_id"]):
+            if line := same_company_line(eref["company"], eref["provider"], row["posting_id"]):
                 print(line)
 
         print()
@@ -174,12 +182,14 @@ def _tailor_rewrite_prompt(overflowing_md: str, verify_output: str) -> str:
 
 
 def application_slug(row: EnrichedRow) -> str:
-    """Deterministic application dir slug: slugged company + posting id."""
+    """Deterministic application dir slug: company or provider, plus posting id."""
     company = "-".join(
         part
         for part in "".join(c if c.isalnum() else " " for c in row["company"].lower()).split()
         if part
     )
+    if not company:
+        return f"{row['provider']}-{row['posting_id']}"
     return f"{company}-{row['posting_id']}"
 
 
@@ -199,6 +209,7 @@ def _record_package(
     event: TailorEvent = {
         "tailored_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "posting_id": row["posting_id"],
+        "provider": row["provider"],
         "slug": slug,
         "app_dir": app_dir,
         "rewrites": rewrites,
@@ -256,11 +267,12 @@ def _notes_markdown(row: EnrichedRow, screening: ScreeningRow | None) -> str:
     """Render the job description to be added to notes.md."""
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
     built = datetime.now(UTC).date().isoformat()
+    review_command = shobr_command(f"review {row['posting_id']}")
     lines = [
         "# SHOBR Job Description",
         "",
         "The shobr state for the job when this package was tailored "
-        f"({built}). `shobr review {row['posting_id']}` shows the live state.",
+        f"({built}). `{review_command}` shows the live state.",
         "",
         f"- Posting: {row['posting_url']}",
         f"- Company: {row['company']}",
@@ -336,10 +348,7 @@ def _run_tailor_live(
         raise ShobrError("could not parse a valid reply from the LLM; no package recorded")
 
     # Have LLM create tailored resume
-    print(
-        f"Sent tailor-edits request for lead {BOLD}[{row['company']}] "
-        f"{row['posting_id']} ({row['title']}){RESET}."
-    )
+    print(f"Sent tailor-edits request for lead {BOLD}{row_header(row)} ({row['title']}){RESET}.")
     print("Waiting for response...")
     edits_text = chat_completion(_tailor_edits_prompt(row, profile), max_tokens=TAILOR_MAX_TOKENS)
     verified_md = _parse_md_reply(edits_text, "resume_md")
@@ -399,7 +408,12 @@ def _run_tailor_live(
     existing = notes_path.read_text(encoding="utf-8") if notes_path.exists() else ""
     if existing and not existing.endswith("\n"):
         existing += "\n"
-    snapshot = _notes_markdown(row, project_screening()["rows"].get(row["posting_id"]))
+    snapshot = _notes_markdown(
+        row,
+        project_screening(current_provider().name)["rows"].get(
+            store_key(row["provider"], row["posting_id"])
+        ),
+    )
     notes_path.write_text(f"{existing}\n{snapshot}", encoding="utf-8")
     commit(f"tailor {slug}: notes")
 
@@ -433,8 +447,18 @@ def _run_tailor_for_row(row: EnrichedRow, print_prompt: bool, force: bool = Fals
     _run_tailor_live(row, profile)
 
 
+def _require_tailoring() -> None:
+    """Raise when the current board has no per-application tailoring."""
+    provider = current_provider()
+    if not provider.supports_tailoring:
+        raise ShobrError(
+            f"provider {provider.name} has no tailoring; screen and track postings directly"
+        )
+
+
 def tailor_posting_id(posting_id: str, print_prompt: bool, force: bool = False) -> None:
     """Build the application package for a specific pursue posting."""
+    _require_tailoring()
     row = get_enriched_row_on_stage(posting_id, "tailorable")
     _run_tailor_for_row(row, print_prompt, force)
 
@@ -447,11 +471,11 @@ def oldest_tailorable(
     """Oldest pursue row with no package yet, still passing enrichment."""
     tailored_ids = set(tailored)
     for row in enriched:
-        sr = screened.get(row["posting_id"])
+        sr = screened.get(store_key(row["provider"], row["posting_id"]))
         if (
             sr is not None
             and sr["decision"] == ReviewDecision.PURSUE
-            and row["posting_id"] not in tailored_ids
+            and store_key(row["provider"], row["posting_id"]) not in tailored_ids
             and row["actionable"]
         ):
             return row
@@ -460,9 +484,12 @@ def oldest_tailorable(
 
 def tailor_next(print_prompt: bool, force: bool = False) -> None:
     """Build the package for the oldest pursue row with no package yet."""
+    _require_tailoring()
     rows = get_enriched_rows()
     row = oldest_tailorable(
-        list(rows.values()), project_screening()["rows"], project_tailoring()["rows"]
+        list(rows.values()),
+        project_screening(current_provider().name)["rows"],
+        project_tailoring(current_provider().name)["rows"],
     )
     if row is None:
         print("nothing to tailor")
@@ -475,15 +502,17 @@ def tailor_all(force: bool = False) -> None:
 
     Skips stale rows unless forced. Fails when nothing was built.
     """
+    _require_tailoring()
     rows = get_enriched_rows()
     threshold = load_config()["stale_after_days"]
-    screened = project_screening()["rows"]
+    screened = project_screening(current_provider().name)["rows"]
     pending = [
         row
         for row in rows.values()
-        if (sr := screened.get(row["posting_id"])) is not None
+        if (sr := screened.get(store_key(row["provider"], row["posting_id"]))) is not None
         and sr["decision"] == ReviewDecision.PURSUE
-        and row["posting_id"] not in project_tailoring()["rows"]
+        and store_key(row["provider"], row["posting_id"])
+        not in project_tailoring(current_provider().name)["rows"]
         and row["actionable"]
     ]
     skipped = sorted(row["posting_id"] for row in pending if not force and is_stale(row, threshold))

@@ -9,7 +9,6 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .config import load_config
 from .core import (
     DATA_HOME,
     LINKEDIN_BASE_URL,
@@ -18,13 +17,19 @@ from .core import (
     __version__,
     short_path,
 )
+from .providers.base import current_config
 
 BEACHPATROL_COMMANDS_DIR = DATA_HOME / "beachpatrol" / "commands"
 BEACHPATROL_COMMANDS_LOCAL_DIR = Path(__file__).resolve().parent / "beachpatrol-commands"
 
 
 def commands_install() -> None:
-    """Symlink beachpatrol-commands/*.js into the beachpatrol user commands home."""
+    """Symlink every beachpatrol-commands/*.js into the user commands home.
+
+    Commands are prefixed with their provider (for example
+    `linkedin-job-search.js`), so several providers can be installed side by
+    side.
+    """
     BEACHPATROL_COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
     sources = sorted(BEACHPATROL_COMMANDS_LOCAL_DIR.glob("*.js"))
     if not sources:
@@ -51,14 +56,14 @@ def _resolve_beachpatrol_browser() -> str:
     """Get beachpatrol browser to use. Taken from env or config."""
     if env_browser := os.environ.get("SHOBR_BEACHPATROL_BROWSER"):
         return env_browser
-    return load_config()["beachpatrol_browser"]
+    return current_config()["beachpatrol_browser"]
 
 
 def _resolve_beachpatrol_profile() -> str:
     """Get beachpatrol profile to use. Taken from env or config."""
     if env_profile := os.environ.get("SHOBR_BEACHPATROL_PROFILE"):
         return env_profile
-    if profile := load_config()["beachpatrol_profile"]:
+    if profile := current_config()["beachpatrol_profile"]:
         return profile
     raise ShobrError(
         "no beachpatrol profile: set $SHOBR_BEACHPATROL_PROFILE or config beachpatrol_profile"

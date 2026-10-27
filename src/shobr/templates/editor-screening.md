@@ -2,21 +2,12 @@
 
 ## Job Details
 
-- {company} ({posting_id})
-- {title}
-- {pills}
+- {heading}
+- {title}{pills_line}
 - Last Enriched At: {checked}{stale}
 {company_line}
 {apply_lines}
 {ai_lines}
-## Job Description
-
-{job_description}
-
-## Company Description
-
-{company_description}
-
 ## SHOBR SCORING
 
 - Fill score (1-5) and reasoning below.
@@ -24,3 +15,5 @@
 
 SHOBR_SCORE:
 SHOBR_REASONING:
+
+{description_sections}

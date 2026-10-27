@@ -9,9 +9,8 @@ from typing import TypedDict, cast
 
 from .browser import beachmsg_json, capture_parse_failure
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
-from .config import Config, load_config
+from .config import Config
 from .core import (
-    LINKEDIN_BASE_URL,
     DataKind,
     EmploymentType,
     LocationType,
@@ -25,9 +24,12 @@ from .core import (
     reasons_line,
     rejected_tag,
     require_events,
+    row_header,
     same_company_line,
+    shobr_command,
     short_path,
     stage_line,
+    store_key,
     store_path,
 )
 from .discovery import (
@@ -36,6 +38,11 @@ from .discovery import (
     StoredJob,
     base_reject_reason,
     project_discovery,
+)
+from .providers.base import (
+    current_config,
+    current_provider,
+    get_provider,
 )
 
 
@@ -71,6 +78,7 @@ class EnrichmentEvent(JobRow, JobDetail):
     title: str
     company: str
     location: str
+    provider: str
     job_description: str
     company_description: str
     fetched_at: str
@@ -85,17 +93,26 @@ class EnrichedRow(EnrichmentEvent):
 
 
 class EnrichedStore(TypedDict):
-    """Projected enriched rows keyed by posting id."""
+    """Projected enriched rows keyed by provider/posting_id."""
 
     fetched_at: str | None
-    rows: dict[str, EnrichedRow]  # keyed by posting_id
+    rows: dict[str, EnrichedRow]  # keyed by provider/posting_id
 
 
 def _reject_enriched(
-    row: EnrichmentEvent, apps_by_company: dict[str, dict[str, str]], filters: Config
+    key: str,
+    row: EnrichmentEvent,
+    apps_by_company: dict[str, dict[str, str]],
+    filters: Config,
 ) -> str | None:
     """Return a rejection reason if the job fails the post-enrichment pre-filter."""
-    reason = base_reject_reason(row["location"], row["location_type"], row["title"], filters)
+    reason = base_reject_reason(
+        row["location"],
+        row["location_type"],
+        row["title"],
+        filters,
+        has_location=get_provider(row["provider"]).has_location,
+    )
     if reason is not None:
         return reason
     if (row["employment_type"] or "").lower() in {
@@ -106,34 +123,35 @@ def _reject_enriched(
         return "no longer accepting applications"
     return cooldown_rejection_reason(
         apps_by_company,
-        row["posting_id"],
+        key,
         row["company"],
         row["fetched_at"],
         filters["reject_recent_application_days"],
     )
 
 
-def project_enrichment() -> EnrichedStore:
+def project_enrichment(provider: str | None = None) -> EnrichedStore:
     """Replay the enrichment events log into the projection shape (enrichment.json).
 
-    Keyed by posting_id. Latest-wins per posting_id.
+    Latest-wins per posting. "Recent application cooldown" is always computed
+    across every board.
     """
     if not (events := read_events(DataKind.ENRICHMENT)):
         return {"fetched_at": None, "rows": {}}
     latest: dict[str, EnrichmentEvent] = {}
 
     for raw in events:
-        event: EnrichmentEvent = raw
-        latest[event["posting_id"]] = event
+        event = cast(EnrichmentEvent, raw)
+        latest[store_key(event["provider"], event["posting_id"])] = event
 
-    rows = {}
-    filters = load_config()
+    filters = current_config()
     cooldown_days = filters["reject_recent_application_days"]
-    companies = {pid: row["company"] for pid, row in latest.items()}
+    companies = {key: row["company"] for key, row in latest.items()}
     apps_by_company = applications_by_company(companies) if cooldown_days > 0 else {}
-    for posting_id, row in latest.items():
-        rejected_reason = _reject_enriched(row, apps_by_company, filters)
-        rows[posting_id] = cast(
+    projected: dict[str, EnrichedRow] = {}
+    for key, row in latest.items():
+        rejected_reason = _reject_enriched(key, row, apps_by_company, filters)
+        projected[key] = cast(
             EnrichedRow,
             {
                 **row,
@@ -142,6 +160,9 @@ def project_enrichment() -> EnrichedStore:
                 "rejected_reason": rejected_reason,
             },
         )
+    if provider is None:
+        return {"fetched_at": events[-1]["fetched_at"], "rows": projected}
+    rows = {key: row for key, row in projected.items() if row["provider"] == provider}
     return {"fetched_at": events[-1]["fetched_at"], "rows": rows}
 
 
@@ -159,9 +180,10 @@ def is_stale(row: EnrichedRow, threshold_days: int) -> bool:
 def warn_if_stale(row: EnrichedRow, threshold_days: int) -> None:
     """Print the re-enrich nudge when the row's last check is stale."""
     if is_stale(row, threshold_days):
+        enrich_command = shobr_command(f"enrich {row['posting_id']}")
         print(
             f"  - Stale: last checked over {threshold_days} days ago;"
-            f" consider `shobr enrich {row['posting_id']}` first"
+            f" consider `{enrich_command}` first"
         )
 
 
@@ -170,10 +192,11 @@ def refuse_if_stale(row: EnrichedRow, threshold_days: int, force: bool) -> None:
     if force or not is_stale(row, threshold_days):
         return
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
+    enrich_command = shobr_command(f"enrich {row['posting_id']}")
     raise ShobrError(
         f"posting {row['posting_id']} last checked {checked}"
         f" (> {threshold_days} days ago);"
-        f" re-enrich (`shobr enrich {row['posting_id']}`) or pass --force"
+        f" re-enrich (`{enrich_command}`) or pass --force"
     )
 
 
@@ -193,9 +216,9 @@ def validity_tag(row: EnrichedRow) -> str:
 
 
 def get_enriched_rows() -> dict[str, EnrichedRow]:
-    """Projected enriched rows, raising the error when missing."""
+    """Current provider's projected enriched rows, raising when missing."""
     require_events(DataKind.ENRICHMENT)
-    return project_enrichment()["rows"]
+    return project_enrichment(current_provider().name)["rows"]
 
 
 def _next_lead_to_enrich(leads: DiscoveredStore, enriched: EnrichedStore) -> StoredJob | None:
@@ -203,7 +226,7 @@ def _next_lead_to_enrich(leads: DiscoveredStore, enriched: EnrichedStore) -> Sto
     for row in reversed(leads["rows"]):
         if not row["actionable"]:
             continue
-        if row["posting_id"] in enriched["rows"]:
+        if store_key(row["provider"], row["posting_id"]) in enriched["rows"]:
             continue
         return row
     return None
@@ -268,17 +291,18 @@ def _html_to_markdown(html: str) -> str | None:
 
 
 def print_apply_block(row: EnrichedRow) -> None:
-    """Print the apply-method block with external URL + LinkedIn fallback."""
+    """Print the apply-method block with external URL + board fallback."""
     if not row["apply_method"]:
         return
+    display_name = get_provider(row["provider"]).display_name
     color = YELLOW if row["apply_method"] == "external" else BLUE
     suffix = ":" if row["apply_url"] else ""
     print(f"  - Apply ({color}{row['apply_method']}{RESET}){suffix}")
     if row["apply_url"]:
         print(f"    - {row['apply_url']}")
-        print("    - Or through LinkedIn:")
+        print(f"    - Or through {display_name}:")
     else:
-        print("    - Through LinkedIn:")
+        print(f"    - Through {display_name}:")
     print(f"      - {row['posting_url']}")
 
 
@@ -306,9 +330,10 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     if not row["actionable"]:
         assert row["rejected_reason"] is not None
         tag = rejected_tag(row["rejected_reason"])
-    print(f"[{row['company']}] {row['posting_id']}{tag}")
+    print(f"{row_header(row)}{tag}")
     print(f"  - {row['title']}")
-    print(f"  - {row['location']}")
+    if row["location"]:
+        print(f"  - {row['location']}")
     for label, value in (
         ("Location type", row["location_type"]),
         ("Employment type", row["employment_type"]),
@@ -320,9 +345,9 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     if not row["accepting_applications"]:
         print("  - no longer accepting applications")
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
-    threshold = load_config()["stale_after_days"]
+    threshold = current_config()["stale_after_days"]
     print(f"  - Last Enriched At: {checked}{staleness_tag(row, threshold)}")
-    if line := same_company_line(row["company"], row["posting_id"]):
+    if line := same_company_line(row["company"], row["provider"], row["posting_id"]):
         print(line)
     if short:
         return
@@ -334,13 +359,14 @@ def build_enrichment_event(
     target: JobRow, detail: JobDetailPayload, fetched_at: datetime
 ) -> EnrichmentEvent:
     """Validate a fetched detail and build its event."""
+    provider = get_provider(target["provider"])
     job_description = _html_to_markdown(detail["job_description_html"])
     company_description = _html_to_markdown(detail["company_description_html"])
     try:
         if job_description is None or not job_description.strip():
             raise ShobrError(
                 f"parsed no description for posting {target['posting_id']}; "
-                "the LinkedIn job detail page structure may have changed, "
+                f"the {provider.display_name} job detail page structure may have changed, "
                 "refusing to record an empty enrichment"
             )
         if (
@@ -350,13 +376,14 @@ def build_enrichment_event(
         ):
             raise ShobrError(
                 f"parsed no apply info for posting {target['posting_id']} while it still "
-                "appears open; the LinkedIn job detail page structure may have changed "
-                "(or the posting closed with an unrecognized notice), "
+                f"appears open; the {provider.display_name} job detail page structure may "
+                "have changed (or the posting closed with an unrecognized notice), "
                 "refusing to record an incomplete enrichment"
             )
     except ShobrError:
-        url = f"{LINKEDIN_BASE_URL}/jobs/view/{target['posting_id']}"
-        capture_parse_failure("job-detail", url, detail, posting_id=target["posting_id"])
+        capture_parse_failure(
+            "job-detail", target["posting_url"], detail, posting_id=target["posting_id"]
+        )
         raise
     if company_description is None:
         company_description = ""
@@ -367,6 +394,7 @@ def build_enrichment_event(
         "title": target["title"],
         "company": target["company"],
         "location": target["location"],
+        "provider": provider.name,
         "job_description_html": detail["job_description_html"],
         "company_description_html": detail["company_description_html"],
         "job_description": job_description,
@@ -382,12 +410,13 @@ def build_enrichment_event(
 
 def _enrich_one(target: StoredJob) -> None:
     """Fetch and persist the detail for a single known lead."""
-    nav_url = f"{LINKEDIN_BASE_URL}/jobs/view/{target['posting_id']}"
-    payload = cast(JobDetailPayload, beachmsg_json("job-detail", nav_url))
+    provider = current_provider()
+    nav_url = provider.nav_url(target["posting_id"], target["posting_url"])
+    payload = cast(JobDetailPayload, beachmsg_json(provider.detail_command, nav_url))
     row = build_enrichment_event(target, payload, datetime.now(UTC))
     enriched = persist_event(DataKind.ENRICHMENT, row, project_enrichment)
 
-    print_enriched_row(enriched["rows"][target["posting_id"]])
+    print_enriched_row(enriched["rows"][store_key(target["provider"], target["posting_id"])])
     print()
     print(f"wrote to {short_path(store_path(DataKind.ENRICHMENT))}")
 
@@ -395,8 +424,9 @@ def _enrich_one(target: StoredJob) -> None:
 def enrich_next() -> None:
     """Fetch the full detail of the oldest pre-filtered, non-enriched lead."""
     require_events(DataKind.DISCOVERY)
-    leads = project_discovery()
-    enriched = project_enrichment()
+    provider = current_provider().name
+    leads = project_discovery(provider)
+    enriched = project_enrichment(provider)
 
     target = _next_lead_to_enrich(leads, enriched)
     if target is None:
@@ -410,7 +440,7 @@ def enrich_posting_id(posting_id: str) -> None:
     """Fetch and persist the detail for a specific posting id."""
     require_events(DataKind.DISCOVERY)
 
-    leads = project_discovery()
+    leads = project_discovery(current_provider().name)
     target = next((row for row in leads["rows"] if row["posting_id"] == posting_id), None)
     if target is None:
         raise ShobrError(f"posting {posting_id} not found in leads store")
@@ -422,7 +452,7 @@ def print_enriched() -> None:
     """Print every enriched job detail stored so far, in enrichment order."""
     with paged():
         require_events(DataKind.ENRICHMENT)
-        enriched = project_enrichment()
+        enriched = project_enrichment(current_provider().name)
 
         rows = enriched["rows"].values()
         rejected_count = sum(1 for row in rows if not row["actionable"])
@@ -433,7 +463,7 @@ def print_enriched() -> None:
         print()
         for row in rows:
             print_enriched_row(row, truncate=True)
-            print(stage_line(row["posting_id"], DataKind.ENRICHMENT))
+            print(stage_line(row["provider"], row["posting_id"], DataKind.ENRICHMENT))
 
         reasons = Counter(
             row["rejected_reason"] for row in rows if row["rejected_reason"] is not None
