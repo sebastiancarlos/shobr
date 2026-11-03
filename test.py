@@ -4836,6 +4836,7 @@ class TestCLI(unittest.TestCase):
                 "1 enriched leads awaiting screening (1 lacking LLM screening).", result.stdout
             )
             self.assertIn("screen-next", result.stdout)
+            self.assertIn("screen-llm-all", result.stdout)
             self.assertFalse((data_home.shobr_data / "screening").exists())
 
     def test_next_reports_tailoring(self) -> None:
@@ -4981,6 +4982,30 @@ class TestCLI(unittest.TestCase):
                 events = [json.loads(line) for line in events_path.read_text().splitlines() if line]
                 self.assertEqual(len(events), 1)
                 self.assertEqual(events[0]["score"], 4)
+
+    def test_next_scores_all_with_llm_on_a(self) -> None:
+        """'shobr next' answering a at screening runs screen-llm-all."""
+        with TestDataHome(name="next-screen-all") as data_home:
+            for posting_id in ("1234567890", "2222222222"):
+                seed_minimal_lead(data_home, posting_id=posting_id)
+                refresh_enrichment(data_home, posting_id=posting_id)
+            env = {**data_home.env, **seed_test_profile(data_home)}
+            with FakeLLMServer() as llm_server:
+                env = {**env, **llm_server.env}
+
+                result = shobr("next", env=env, input_text="a\n")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("screen-llm-all", result.stdout)
+                self.assertIn("Scored 2 leads.", result.stdout)
+
+                events_path = data_home.shobr_data / "screening" / "events.jsonl"
+                events = [json.loads(line) for line in events_path.read_text().splitlines() if line]
+                self.assertEqual(len(events), 2)
+                self.assertEqual(
+                    {event["posting_id"] for event in events},
+                    {"1234567890", "2222222222"},
+                )
+                self.assertTrue(all(event["kind"] == "ai_review" for event in events))
 
     def test_next_screens_human_on_h(self) -> None:
         """'shobr next' answering h at screening records a human review."""

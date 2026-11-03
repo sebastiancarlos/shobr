@@ -25,6 +25,7 @@ from .screening import (
     Score,
     ScreeningRow,
     project_screening,
+    screen_llm_all,
     screen_llm_next,
     screen_llm_posting_id,
     screen_next,
@@ -411,7 +412,8 @@ def _run_next() -> None:
             answer = (
                 input(
                     f"Score with [L]LM ({BLUE}{shobr_command('screen-llm-next')}{RESET}), "
-                    f"[h]uman ({BLUE}{shobr_command('screen-next')}{RESET}), "
+                    f"[a]ll ({BLUE}{shobr_command('screen-llm-all')}{RESET}),\n"
+                    f"or [h]uman ({BLUE}{shobr_command('screen-next')}{RESET}), "
                     f"or [N]ot now? {BOLD}[N]{RESET} "
                 )
                 .strip()
@@ -419,6 +421,9 @@ def _run_next() -> None:
             )
             if answer == "l":
                 screen_llm_next(False)
+                return
+            if answer in ("a", "all"):
+                screen_llm_all(False)
                 return
             if answer == "h":
                 screen_next(None, None)
