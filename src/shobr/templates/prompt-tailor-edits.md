@@ -15,8 +15,16 @@ Keep the file's existing structure exactly, including any front matter,
 headings, indentation and list style.
 
 Keep in mind that the base resume already fills its page limit, meaning that
-almost no more content can be added without overflowing. Therefore, ensure
-that your resulting resume is not larger than the base resume.
+almost no more content can be added without overflowing. Therefore, aim for
+your resulting resume not being larger than the base resume.
+
+Don't bother much with counting bytes/characters for aiming to keep the
+resulting resume of the same size: The resume will be rendered as a PDF. So,
+keep in mind that non-monospace font rendering and rendered line breaks will
+be a larger factor in page fit than monospace character count. Thereby, use
+reasonable judgement to guess if the new resume is likely to fit just as well
+as the base resume. Overshots are acceptable, because a later step will verify
+page fit, and trigger a rewrite step if needed.
 
 The following documents will be presented (in order):
 - The "User Detail" document (authored by USER)
