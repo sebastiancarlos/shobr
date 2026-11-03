@@ -4851,6 +4851,7 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("awaiting tailoring", result.stdout)
             self.assertIn("tailor-next", result.stdout)
+            self.assertIn("tailor-all", result.stdout)
             self.assertFalse((data_home.shobr_data / "tailoring").exists())
 
     def test_next_reviews_oldest_untracked(self) -> None:
@@ -5085,6 +5086,30 @@ class TestCLI(unittest.TestCase):
                 events = [json.loads(line) for line in events_path.read_text().splitlines() if line]
                 self.assertEqual(len(events), 1)
                 self.assertEqual(events[0]["posting_id"], "1234567890")
+
+    def test_next_tailors_all_on_a(self) -> None:
+        """'shobr next' answering a at tailoring builds every pending package."""
+        with TestDataHome(name="next-tailor-all") as data_home:
+            for posting_id, score in (("1234567890", 4), ("2222222222", 5)):
+                seed_minimal_lead(data_home, posting_id=posting_id)
+                refresh_enrichment(data_home, posting_id=posting_id)
+                seed_human_review(data_home, posting_id=posting_id, score=score)
+            env = {
+                **data_home.env,
+                **seed_test_profile(data_home),
+                **seed_test_cv(data_home),
+            }
+            with FakeLLMServer() as llm_server:
+                result = shobr("next", env={**env, **llm_server.env}, input_text="a\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("tailor-all", result.stdout)
+                self.assertIn("Built 2 packages.", result.stdout)
+
+            tailored = stored_rows(data_home.shobr_data / "tailoring" / "tailoring.json")
+            self.assertEqual(
+                set(tailored),
+                {stored_key("1234567890"), stored_key("2222222222")},
+            )
 
     def test_next_declined_falls_through(self) -> None:
         """'shobr next' declining the only pending stage reports nothing done."""
@@ -5430,7 +5455,7 @@ class TestCLI(unittest.TestCase):
             env = {**data_home.env, **seed_test_profile(data_home)}
             seed_human_review(data_home)
             result = shobr("next", env=env, input_text="n\n" * 10)
-            self.assertIn("Tailor oldest", result.stdout)
+            self.assertIn("Tailor [o]ldest", result.stdout)
 
             seed_enrichment_event(
                 data_home,
@@ -5440,7 +5465,7 @@ class TestCLI(unittest.TestCase):
             )
             result = shobr("next", env=env, input_text="n\n" * 10)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertNotIn("Tailor oldest", result.stdout)
+            self.assertNotIn("Tailor [o]ldest", result.stdout)
 
     def test_tailor_next_reports_invalidated(self) -> None:
         """tailor-next finds nothing to do once the pursue row is closed."""
@@ -6602,7 +6627,7 @@ class TestProviderCLI(unittest.TestCase):
             next_result = shobr("--provider", "notail", "next", env=env)
             self.assertEqual(next_result.returncode, 0, next_result.stderr)
             self.assertIn("shobr --provider notail track 1 applied", next_result.stdout)
-            self.assertNotIn("Tailor oldest", next_result.stdout)
+            self.assertNotIn("Tailor [o]ldest", next_result.stdout)
 
     def test_fake_provider_discover_and_enrich_all_through_browser(self) -> None:
         """A temporary provider runs through discovery and bulk enrichment."""

@@ -34,6 +34,7 @@ from .screening import (
 from .tailoring import (
     TailoringRow,
     project_tailoring,
+    tailor_all,
     tailor_next,
     tailor_posting_id,
 )
@@ -460,11 +461,20 @@ def _run_next() -> None:
             if _confirm(f"Re-enrich it first? ({BLUE}{enrich_command}{RESET}) {BOLD}[y/N]{RESET} "):
                 enrich_posting_id(oldest["posting_id"])
                 return
-        if _confirm(
-            f"Tailor oldest screened lead? ({BLUE}{shobr_command('tailor-next')}{RESET}) "
-            f"{BOLD}[y/N]{RESET} "
-        ):
+        answer = (
+            input(
+                f"Tailor [o]ldest lead ({BLUE}{shobr_command('tailor-next')}{RESET}), "
+                f"[a]ll pending ({BLUE}{shobr_command('tailor-all')}{RESET}),\n"
+                f"or [N]ot now? {BOLD}[N]{RESET} "
+            )
+            .strip()
+            .lower()
+        )
+        if answer in ("o", "y", "yes"):
             tailor_next(False)
+            return
+        if answer in ("a", "all"):
+            tailor_all(False)
             return
 
     if _pending_review(screened, _ids(tailored), _ids(tracked), enriched):
