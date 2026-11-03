@@ -8,7 +8,13 @@ from .ai import smoke_test_completion
 from .browser import commands_install, smoke_test_browser
 from .core import ShobrError, __version__
 from .discovery import discover, discover_local, discover_posting_id
-from .enrichment import enrich_all, enrich_next, enrich_posting_id, print_enriched
+from .enrichment import (
+    DEFAULT_ENRICH_ALL_DELAY,
+    enrich_all,
+    enrich_next,
+    enrich_posting_id,
+    print_enriched,
+)
 from .notification import notifications, notifications_local
 from .pipeline import next_posting_id, print_status, run_next
 from .providers.base import DEFAULT_PROVIDER, all_providers, set_provider
@@ -137,7 +143,7 @@ def main() -> None:
     enrich_all_parser.add_argument(
         "--delay",
         type=float,
-        default=10.0,
+        default=DEFAULT_ENRICH_ALL_DELAY,
         metavar="SECONDS",
         help="wait between detail fetches (default: 10, minimum: 1)",
     )

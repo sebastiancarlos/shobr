@@ -9,7 +9,9 @@ from .config import load_config
 from .core import ShobrError, shobr_command, store_key
 from .discovery import StoredJob, discover, project_discovery
 from .enrichment import (
+    DEFAULT_ENRICH_ALL_DELAY,
     EnrichedRow,
+    enrich_all,
     enrich_next,
     enrich_posting_id,
     is_closed,
@@ -366,11 +368,20 @@ def _run_next() -> None:
     enriched_ids = {row["posting_id"] for row in enriched}
     if pending := _pending_enrichment(leads, enriched_ids):
         print(f"{pending} leads awaiting enrichment.")
-        if _confirm(
-            f"Fetch oldest lead details? ({BLUE}{shobr_command('enrich-next')}{RESET}) "
-            f"{BOLD}[y/N]{RESET} "
-        ):
+        answer = (
+            input(
+                f"Fetch [o]ldest lead details ({BLUE}{shobr_command('enrich-next')}{RESET}), "
+                f"[a]ll pending ({BLUE}{shobr_command('enrich-all')}{RESET}), "
+                f"or [N]ot now? {BOLD}[N]{RESET} "
+            )
+            .strip()
+            .lower()
+        )
+        if answer in ("o", "y", "yes"):
             enrich_next()
+            return
+        if answer in ("a", "all"):
+            enrich_all(DEFAULT_ENRICH_ALL_DELAY)
             return
 
     human_reviewed = {sr["posting_id"] for sr in screened.values() if sr["human"] is not None}

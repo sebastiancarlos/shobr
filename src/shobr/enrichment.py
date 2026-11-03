@@ -47,6 +47,8 @@ from .providers.base import (
     get_provider,
 )
 
+DEFAULT_ENRICH_ALL_DELAY = 10.0
+
 
 class JobDetail(TypedDict):
     """The parsed job detail page, as returned by the beachpatrol command."""

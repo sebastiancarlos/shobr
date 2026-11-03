@@ -4816,6 +4816,7 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("awaiting enrichment", result.stdout)
             self.assertIn("enrich-next", result.stdout)
+            self.assertIn("enrich-all", result.stdout)
 
             enriched = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
             self.assertEqual(len(enriched), 1)
@@ -4925,6 +4926,41 @@ class TestCLI(unittest.TestCase):
 
                     result = shobr("next", env=env, input_text="y\n")
                     self.assertEqual(result.returncode, 0, result.stderr)
+                    enriched = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
+                    self.assertIn(stored_key("5550000001"), enriched)
+                    self.assertTrue(enriched[stored_key("5550000001")]["actionable"])
+
+    def test_next_enriches_all_on_a(self) -> None:
+        """'shobr next' answering a at enrichment runs enrich-all."""
+        with TestDataHome(name="next-enrich-all") as data_home:
+            env = data_home.env
+            pages: dict[str, str | list[str]] = {
+                "/jobs/view/5550000001": _read_fixture("job-detail.html")
+            }
+            with FakeLinkedInServer(pages) as server:
+                profile = f"test-next-enrich-all-{os.getpid()}"
+                with TestBeachpatrolInstance(env, profile):
+                    env = {
+                        **env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+                    result = shobr("setup", env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    seed_test_config(data_home)
+                    seed_provider_discovery(
+                        data_home,
+                        "linkedin",
+                        "5550000001",
+                        title="Senior Software Engineer, Widget Platform",
+                        company="FakeCo",
+                    )
+
+                    result = shobr("next", env=env, input_text="a\n")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("enrich-all", result.stdout)
+                    self.assertIn("Enriching 1/1", result.stdout)
+                    self.assertIn("Enriched 1 leads.", result.stdout)
                     enriched = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
                     self.assertIn(stored_key("5550000001"), enriched)
                     self.assertTrue(enriched[stored_key("5550000001")]["actionable"])
