@@ -1,0 +1,87 @@
+<html>
+<head><title>Job search with pagination (synthetic test fixture)</title></head>
+<body>
+<main>
+<div id="job-list">
+  <div componentkey="job-card-component-ref-5550000101">
+    <div>Senior Software Engineer</div>
+    <div>PagedCo</div>
+    <div>Testville</div>
+  </div>
+  <div componentkey="job-card-component-ref-5550000102">
+    <div>Staff Platform Engineer</div>
+    <div>Initech</div>
+    <div>Remote</div>
+  </div>
+  <div componentkey="job-card-component-ref-5550000103">
+    <div>Backend Engineer</div>
+    <div>Globex</div>
+    <div>Testville</div>
+  </div>
+</div>
+<div>
+  <button aria-label="Previous" data-testid="pagination-controls-prev-button-hidden"
+          type="button">Previous</button>
+  <ul data-testid="pagination-controls-list">
+    <li><button aria-label="Page 1" aria-current="true" type="button">1</button></li>
+    <li><button aria-label="Page 2" aria-current="false" type="button">2</button></li>
+  </ul>
+  <button id="next-page" data-testid="pagination-controls-next-button-visible"
+          type="button">Next</button>
+</div>
+<script>
+  // Mirrors the live page closely enough for the scraper: paging is a button
+  // click that re-renders in place, the current page carries aria-current, and
+  // the trailing chevron turns "hidden" on the last page.
+  const PAGES = [
+    [
+      ["5550000101", "Senior Software Engineer", "PagedCo", "Testville"],
+      ["5550000102", "Staff Platform Engineer", "Initech", "Remote"],
+      ["5550000103", "Backend Engineer", "Globex", "Testville"],
+    ],
+    [
+      ["5550000104", "Senior Software Engineer", "Umbrella", "Remote"],
+      ["5550000105", "Technical Lead", "Hooli", "Testville"],
+      ["5550000106", "Software Engineer", "Stark", "Remote"],
+    ],
+  ];
+  let index = 0;
+  const list = document.getElementById("job-list");
+  const next = document.getElementById("next-page");
+  const indicators = () =>
+    document.querySelectorAll('[data-testid="pagination-controls-list"] button');
+
+  const card = ([id, title, company, location]) => {
+    const node = document.createElement("div");
+    node.setAttribute("componentkey", "job-card-component-ref-" + id);
+    for (const text of [title, company, location]) {
+      const cell = document.createElement("div");
+      cell.textContent = text;
+      node.append(cell);
+    }
+    return node;
+  };
+
+  // Live LinkedIn paints empty card shells first and fills them a beat later.
+  const ghost = ([id]) => {
+    const node = document.createElement("div");
+    node.setAttribute("componentkey", "job-card-component-ref-" + id);
+    return node;
+  };
+
+  next.addEventListener("click", () => {
+    if (index >= PAGES.length - 1) return;
+    index += 1;
+    list.replaceChildren(...PAGES[index].map(ghost));
+    indicators().forEach((button, position) =>
+      button.setAttribute("aria-current", position === index ? "true" : "false"),
+    );
+    // Last page: the chevron becomes hidden, as on the live site.
+    next.dataset.testid = "pagination-controls-next-button-hidden";
+    next.disabled = true;
+    setTimeout(() => list.replaceChildren(...PAGES[index].map(card)), 300);
+  });
+</script>
+</main>
+</body>
+</html>

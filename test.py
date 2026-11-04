@@ -1801,6 +1801,52 @@ class TestCLI(unittest.TestCase):
                     self.assertEqual(len(events_path.read_text().splitlines()), 2)
                     self.assertEqual(json.loads(discovery_path.read_text()), leads2)
 
+    def test_discover_paginates_via_next_page(self) -> None:
+        """Discovery clicks Next on the results page, waits out the ghost cards
+        while the second page hydrates, keeps both pages' rows in one event, and
+        stops when the chevron turns hidden on the last page."""
+        profile = f"test-{os.getpid()}-shobr-paged"
+        with TestDataHome(name="linkedin-paged") as data_home:
+            env = data_home.env
+            result = shobr("setup", env=env)
+            seed_test_config(data_home)
+
+            with FakeLinkedInServer(
+                {"/jobs/search-results": _read_fixture("job-search-paged.html")}
+            ) as server:
+                with TestBeachpatrolInstance(env, profile):
+                    env = {
+                        **env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+
+                    result = shobr("discover", env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("All stored jobs: 6 jobs", result.stdout)
+
+                    events_path = data_home.shobr_data / "discovery" / "events.jsonl"
+                    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+                    self.assertEqual(len(events), 1)
+                    rows = events[0]["rows"]
+                    self.assertEqual(
+                        {row["posting_id"] for row in rows},
+                        {
+                            "5550000101",
+                            "5550000102",
+                            "5550000103",
+                            "5550000104",
+                            "5550000105",
+                            "5550000106",
+                        },
+                    )
+                    # Ghost cards carry ids but no text; a parse that raced the
+                    # hydration would store blank company/location fields.
+                    self.assertTrue(
+                        all(row["title"] and row["company"] and row["location"] for row in rows),
+                        "\n".join(str(row) for row in rows),
+                    )
+
     def test_discovered_keeps_first_query(self) -> None:
         """Re-seen rows keep the query that first surfaced them."""
         profile = f"test-{os.getpid()}-shobr-first-query"
