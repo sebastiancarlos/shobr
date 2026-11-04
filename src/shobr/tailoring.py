@@ -12,6 +12,7 @@ from .config import load_config, resolve_cv_toolchain_dir
 from .core import (
     DataKind,
     ShobrError,
+    cached_projection,
     event_log,
     get_enriched_row_on_stage,
     paged,
@@ -97,6 +98,7 @@ def load_tailor_profile() -> TailoringProfile:
     return cast(TailoringProfile, load_files(PROFILE_FILES + TAILOR_FILES))
 
 
+@cached_projection
 def project_tailoring(provider: str | None = None) -> TailoredStore:
     """Replay the tailoring events log."""
     if not (events := read_events(DataKind.TAILORING)):

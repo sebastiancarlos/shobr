@@ -12,6 +12,7 @@ from .core import (
     LocationType,
     ShobrError,
     applications_by_company,
+    cached_projection,
     company_label,
     cooldown_rejection_reason,
     event_log,
@@ -157,6 +158,7 @@ def _reject_job(row: JobRow, filters: Config) -> str | None:
     )
 
 
+@cached_projection
 def project_discovery(provider: str | None = None) -> DiscoveredStore:
     """Replay events.jsonl into the store shape (discovery.json)
 

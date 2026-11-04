@@ -2508,6 +2508,53 @@ class TestCLI(unittest.TestCase):
             self.assertFalse((discovery_dir / "events.jsonl").exists())
             self.assertFalse((discovery_dir / "discovery.json").exists())
 
+    def test_projection_cache_clears_after_append(self) -> None:
+        """A memoized projection is dropped when a write appends, so one process
+        never reprojects stale rows after adding an event."""
+        with TestDataHome(name="projection-cache") as data_home:
+            seed_test_config(data_home)
+            script = """\
+import sys
+
+from shobr.core import DataKind, persist_event
+from shobr.discovery import project_discovery
+
+
+def event(posting_id: str) -> dict:
+    return {
+        "fetched_at": "2026-01-01T00:00:00+00:00",
+        "source": {"type": "manual"},
+        "rows": [
+            {
+                "provider": "linkedin",
+                "posting_id": posting_id,
+                "posting_url": f"https://www.linkedin.com/jobs/view/{posting_id}",
+                "title": "Software Engineer",
+                "company": "FakeCo",
+                "location": "Testville",
+            }
+        ],
+    }
+
+
+assert project_discovery("linkedin")["rows"] == [], "fresh home should project empty"
+persist_event(DataKind.DISCOVERY, event("1"), lambda: project_discovery("linkedin"))
+assert len(project_discovery("linkedin")["rows"]) == 1, "first append not projected"
+persist_event(DataKind.DISCOVERY, event("2"), lambda: project_discovery("linkedin"))
+if len(project_discovery("linkedin")["rows"]) != 2:
+    sys.exit("stale projection: the cached rows survived an append")
+print("ok")
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                env={**data_home.env, "PYTHONPATH": str(ROOT / "src")},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "ok")
+
     def test_discovered_never_pages_when_piped(self) -> None:
         """Piped output never invokes the pager, even with PAGER set."""
         with TestDataHome() as data_home:

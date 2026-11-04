@@ -1,6 +1,7 @@
 """SHOBR cross-functional core: paths, display helpers, stage gates."""
 
 import contextlib
+import functools
 import importlib.resources
 import io
 import json
@@ -15,7 +16,7 @@ from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from .color import BLUE, RED, RESET, YELLOW
 
@@ -154,12 +155,35 @@ def require_events(kind: DataKind) -> None:
         )
 
 
+# cache_clear callables of every memoized projection, so they can be dropped
+_PROJECTION_CACHES: list[Callable[[], None]] = []
+
+
+def cached_projection[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
+    """Memoize a projection replay for the life of the process.
+
+    Projections are pure replays of an event log. Every event write appends
+    through `persist_event`, which clears these caches, so a projection is
+    never stale after an append.
+    """
+    cached = functools.cache(fn)
+    _PROJECTION_CACHES.append(cached.cache_clear)
+    return cast(Callable[P, R], cached)
+
+
+def clear_projection_cache() -> None:
+    """Drop every memoized projection, for after an event log has changed."""
+    for clear in _PROJECTION_CACHES:
+        clear()
+
+
 def persist_event[T](kind: DataKind, event: object, project: Callable[[], T]) -> T:
     """Append one event to the log, reproject, and write the store."""
     events = event_log(kind)
     events.parent.mkdir(parents=True, exist_ok=True)
     with events.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(event) + "\n")
+    clear_projection_cache()
     projected = project()
     store_path(kind).write_text(json.dumps(projected, indent=2))
     return projected

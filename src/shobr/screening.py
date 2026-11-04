@@ -23,6 +23,7 @@ from .config import (
 from .core import (
     DataKind,
     ShobrError,
+    cached_projection,
     event_log,
     get_enriched_row_on_stage,
     paged,
@@ -309,6 +310,7 @@ def _screening_decision(human: _HumanReview | None, ai: _AIReview | None) -> Rev
     return ReviewDecision.SKIP
 
 
+@cached_projection
 def project_screening(provider: str | None = None) -> _ScreenedStore:
     """Replay the screening events log into the projection shape (screening.json).
 

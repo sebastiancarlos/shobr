@@ -18,6 +18,7 @@ from .core import (
     LocationType,
     ShobrError,
     applications_by_company,
+    cached_projection,
     closed_tag,
     cooldown_rejection_reason,
     paged,
@@ -134,6 +135,7 @@ def _reject_enriched(
     )
 
 
+@cached_projection
 def project_enrichment(provider: str | None = None) -> EnrichedStore:
     """Replay the enrichment events log into the projection shape (enrichment.json).
 

@@ -9,6 +9,7 @@ from .config import load_config
 from .core import (
     DataKind,
     ShobrError,
+    cached_projection,
     event_log,
     paged,
     persist_event,
@@ -84,6 +85,7 @@ class TrackedStore(TypedDict):
     rows: dict[str, TrackedRow]
 
 
+@cached_projection
 def project_tracking(provider: str | None = None) -> TrackedStore:
     """Replay the tracking events log.
 
