@@ -23,6 +23,8 @@ from .core import (
     cooldown_rejection_reason,
     paged,
     persist_event,
+    print_batch_done,
+    print_batch_progress,
     read_events,
     reasons_line,
     rejected_tag,
@@ -468,15 +470,15 @@ def enrich_all(delay: float) -> None:
     for index, target in enumerate(pending, start=1):
         if index > 1 and delay:
             time.sleep(delay)
-        print(f"Enriching {index}/{total}: {row_header(target)} ({target['title']})")
+        print_batch_progress("Enriching", index, total, target)
         try:
-            row = _enrich_one(target)
+            _enrich_one(target)
         except ShobrError as exc:
+            print_batch_done("Enriched", index - 1, total, "leads")
             raise ShobrError(
                 f"enrich-all stopped at {row_header(target)}: {exc}", code=exc.code
             ) from exc
-        enriched["rows"][store_key(row["provider"], row["posting_id"])] = row
-    print(f"Enriched {total} leads.")
+    print_batch_done("Enriched", total, total, "leads")
 
 
 def enrich_posting_id(posting_id: str) -> None:

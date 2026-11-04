@@ -1,9 +1,10 @@
 """The tailoring stage: build per-job application packages via a CV toolchain."""
 
 import re
-import sys
+import shutil
 import textwrap
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import NoReturn, TypedDict, cast
 
 from .ai import chat_completion, parse_json_object
@@ -17,9 +18,12 @@ from .core import (
     get_enriched_row_on_stage,
     paged,
     persist_event,
+    print_batch_done,
+    print_batch_progress,
     read_events,
     render_template,
     require_events,
+    retry_llm_task,
     row_header,
     same_company_line,
     shobr_command,
@@ -349,79 +353,110 @@ def _run_tailor_live(
         """Degrade path: no package recorded, controlled nonzero exit."""
         raise ShobrError("could not parse a valid reply from the LLM; no package recorded")
 
-    # Have LLM create tailored resume
-    print(f"Sent tailor-edits request for lead {BOLD}{row_header(row)} ({row['title']}){RESET}.")
-    print("Waiting for response...")
-    edits_text = chat_completion(_tailor_edits_prompt(row, profile), max_tokens=TAILOR_MAX_TOKENS)
-    verified_md = _parse_md_reply(edits_text, "resume_md")
-    if verified_md is None:
-        unparseable_reply()
-    verified_md = _wrap_markdown(verified_md)
-
-    # create new CV application folder with the tailored resume, and commit
     slug = application_slug(row)
-    app_dir = toolchain.scaffold(slug, row["posting_url"])
-    commit(f"tailor {slug}: scaffold")
-    (app_dir / "resume.md").write_text(verified_md, encoding="utf-8")
-    commit(f"tailor {slug}: tailored resume")
-
-    # have LLM rewrite tailored resume until it passes verification, and commit
+    app_dir: Path | None = None
     rewrites = 0
-    current_md = verified_md
-    while True:
-        toolchain.build(app_dir)
-        is_valid, report = toolchain.page_check(app_dir)
-        if is_valid:
-            break
-        if rewrites >= TAILOR_MAX_REWRITES:
-            raise ShobrError(
-                f"resume still over one page after {rewrites} rewrites; package left at {app_dir}"
-            )
-        print(f"Sent tailor-rewrite request (attempt {rewrites + 1}).")
+    current_md = ""
+    cover_md = ""
+    try:
+        # Have LLM create tailored resume
+        print(
+            f"Sent tailor-edits request for lead {BOLD}{row_header(row)} ({row['title']}){RESET}."
+        )
         print("Waiting for response...")
-        rewrite_text = chat_completion(
-            _tailor_rewrite_prompt(current_md, report), max_tokens=TAILOR_MAX_TOKENS
+
+        def edits_task() -> str:
+            """One completion plus parse for the tailored resume."""
+            text = chat_completion(_tailor_edits_prompt(row, profile), max_tokens=TAILOR_MAX_TOKENS)
+            md = _parse_md_reply(text, "resume_md")
+            if md is None:
+                unparseable_reply()
+            return md
+
+        verified_md = _wrap_markdown(retry_llm_task(edits_task))
+
+        # create new CV application folder with the tailored resume, and commit
+        app_dir = toolchain.scaffold(slug, row["posting_url"])
+        commit(f"tailor {slug}: scaffold")
+        (app_dir / "resume.md").write_text(verified_md, encoding="utf-8")
+        commit(f"tailor {slug}: tailored resume")
+
+        # have LLM rewrite tailored resume until it passes verification, and commit
+        current_md = verified_md
+        while True:
+            toolchain.build(app_dir)
+            is_valid, report = toolchain.page_check(app_dir)
+            if is_valid:
+                break
+            if rewrites >= TAILOR_MAX_REWRITES:
+                raise ShobrError(
+                    f"resume still over one page after {rewrites} rewrites;"
+                    " failed attempt rolled back"
+                )
+            print(f"Sent tailor-rewrite request (attempt {rewrites + 1}).")
+            print("Waiting for response...")
+
+            def rewrite_task() -> str:
+                """One completion plus parse for a shortened resume."""
+                text = chat_completion(
+                    _tailor_rewrite_prompt(current_md, report), max_tokens=TAILOR_MAX_TOKENS
+                )
+                md = _parse_md_reply(text, "resume_md")
+                if md is None:
+                    unparseable_reply()
+                return md
+
+            current_md = _wrap_markdown(retry_llm_task(rewrite_task))
+            (app_dir / "resume.md").write_text(current_md, encoding="utf-8")
+            rewrites += 1
+            commit(f"tailor {slug}: rewrite {rewrites}")
+
+        # generate cover letter, and commit
+        print("Sent tailor-cover request.")
+        print("Waiting for response...")
+
+        def cover_task() -> str:
+            """One completion plus parse for the cover letter."""
+            text = chat_completion(
+                _tailor_cover_prompt(row, profile, current_md), max_tokens=TAILOR_MAX_TOKENS
+            )
+            md = _parse_md_reply(text, "cover_md")
+            if md is None:
+                unparseable_reply()
+            return md
+
+        cover_md = _wrap_markdown(retry_llm_task(cover_task))
+        (app_dir / "cover-letter.md").write_text(cover_md, encoding="utf-8")
+        commit(f"tailor {slug}: cover letter")
+
+        notes_path = app_dir / "notes.md"
+        existing = notes_path.read_text(encoding="utf-8") if notes_path.exists() else ""
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        snapshot = _notes_markdown(
+            row,
+            project_screening(current_provider().name)["rows"].get(
+                store_key(row["provider"], row["posting_id"])
+            ),
         )
-        rewritten = _parse_md_reply(rewrite_text, "resume_md")
-        if rewritten is None:
-            unparseable_reply()
-        current_md = _wrap_markdown(rewritten)
-        (app_dir / "resume.md").write_text(current_md, encoding="utf-8")
-        rewrites += 1
-        commit(f"tailor {slug}: rewrite {rewrites}")
+        notes_path.write_text(f"{existing}\n{snapshot}", encoding="utf-8")
+        commit(f"tailor {slug}: notes")
 
-    # generate cover letter, and commit
-    print("Sent tailor-cover request.")
-    print("Waiting for response...")
-    cover_text = chat_completion(
-        _tailor_cover_prompt(row, profile, current_md), max_tokens=TAILOR_MAX_TOKENS
-    )
-    cover_md = _parse_md_reply(cover_text, "cover_md")
-    if cover_md is None:
-        raise ShobrError(
-            "could not parse a valid reply from the LLM; no package recorded\n"
-            f"package left at {short_path(app_dir)}"
-        )
-    cover_md = _wrap_markdown(cover_md)
-    (app_dir / "cover-letter.md").write_text(cover_md, encoding="utf-8")
-    commit(f"tailor {slug}: cover letter")
+        toolchain.finalize(app_dir)
+        commit(f"tailor {slug}: renamed pdfs")
+    except Exception:
+        if app_dir is not None:
+            try:
+                shutil.rmtree(app_dir)
+                commit(f"tailor {slug}: rollback failed attempt")
+            except (OSError, ShobrError) as cleanup_exc:
+                raise ShobrError(
+                    "tailoring failed and the failed attempt could not be cleaned up at"
+                    f" {short_path(app_dir)}: {cleanup_exc}"
+                ) from cleanup_exc
+        raise
 
-    notes_path = app_dir / "notes.md"
-    existing = notes_path.read_text(encoding="utf-8") if notes_path.exists() else ""
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
-    snapshot = _notes_markdown(
-        row,
-        project_screening(current_provider().name)["rows"].get(
-            store_key(row["provider"], row["posting_id"])
-        ),
-    )
-    notes_path.write_text(f"{existing}\n{snapshot}", encoding="utf-8")
-    commit(f"tailor {slug}: notes")
-
-    toolchain.finalize(app_dir)
-    commit(f"tailor {slug}: renamed pdfs")
-
+    assert app_dir is not None
     _record_package(row, slug, str(app_dir), rewrites, current_md, cover_md)
 
 
@@ -502,7 +537,8 @@ def tailor_next(print_prompt: bool, force: bool = False) -> None:
 def tailor_all(force: bool = False) -> None:
     """Build packages for every pursue row with no package yet.
 
-    Skips stale rows unless forced. Fails when nothing was built.
+    Skips stale rows unless forced. Stops at the first failure, and fails when
+    nothing was built.
     """
     _require_tailoring()
     rows = get_enriched_rows()
@@ -528,18 +564,18 @@ def tailor_all(force: bool = False) -> None:
         (row for row in pending if force or row["posting_id"] not in skipped),
         key=lambda row: is_stale(row, threshold),
     )
+    total = len(ordered)
     built = 0
-    failed: list[str] = []
-    for row in ordered:
+    for index, row in enumerate(ordered, start=1):
+        print_batch_progress("Tailoring", index, total, row)
         try:
             _run_tailor_for_row(row, False, force)
         except ShobrError as exc:
-            print(exc, file=sys.stderr)
-            failed.append(row["posting_id"])
-        else:
-            built += 1
-    print(f"Built {built} packages.")
-    if failed:
-        raise ShobrError(f"Failed to tailor {len(failed)}: {', '.join(failed)}")
+            print_batch_done("Built", built, total, "packages")
+            raise ShobrError(
+                f"tailor-all stopped at {row_header(row)}: {exc}", code=exc.code
+            ) from exc
+        built += 1
+    print_batch_done("Built", built, total, "packages")
     if built == 0 and skipped:
         raise ShobrError(f"All {len(skipped)} pending rows stale; re-enrich first or pass --force")

@@ -90,8 +90,13 @@ def _is_worktree(path: Path) -> bool:
 
 
 def git_commit(message: str, cwd: Path) -> None:
-    """Stage everything at CWD, and commit. Noop on non-git cwd."""
+    """Stage everything at CWD, and commit. Noop on non-git or clean cwd."""
     if not _is_worktree(cwd):
+        return
+    status, code = _run("git", "status", "--porcelain", cwd=cwd)
+    if code != 0:
+        raise ShobrError(status)
+    if not status.strip():
         return
     steps = [
         ["git", "add", "-A"],

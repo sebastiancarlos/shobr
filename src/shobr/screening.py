@@ -2,7 +2,6 @@
 
 import os
 import subprocess
-import sys
 import tempfile
 import textwrap
 from datetime import UTC, datetime
@@ -28,9 +27,12 @@ from .core import (
     get_enriched_row_on_stage,
     paged,
     persist_event,
+    print_batch_done,
+    print_batch_progress,
     read_events,
     render_template,
     require_events,
+    retry_llm_task,
     row_header,
     same_company_line,
     shobr_command,
@@ -685,7 +687,6 @@ def oldest_missing_review(
     rows: dict[str, EnrichedRow],
     screened: dict[str, ScreeningRow],
     kind: Literal["human", "ai"],
-    exclude: frozenset[str] = frozenset(),
 ) -> EnrichedRow | None:
     """Get oldest enriched row, which passes, with no review of `kind` yet.
 
@@ -694,8 +695,6 @@ def oldest_missing_review(
     """
     for row in rows.values():
         if not row["actionable"]:
-            continue
-        if row["posting_id"] in exclude:
             continue
         sr = screened.get(store_key(row["provider"], row["posting_id"]))
         if sr is not None:
@@ -726,13 +725,18 @@ def _run_llm_for_row(row: EnrichedRow, print_prompt: bool, force: bool = False) 
     refuse_if_stale(row, load_config()["stale_after_days"], force)
     print(f"Sent AI review request for lead {BOLD}{row_header(row)} ({row['title']}){RESET}.")
     print("Waiting for response...")
-    parsed = _parse_ai_reply(chat_completion(prompt))
-    if parsed is None:
-        raise ShobrError(
-            "could not parse a valid score (1-5) and reasoning from the LLM reply;"
-            " no review recorded"
-        )
-    score, reasoning = parsed
+
+    def score_task() -> tuple[Score, str]:
+        """One completion plus parse, retried by `retry_llm_task`."""
+        parsed = _parse_ai_reply(chat_completion(prompt))
+        if parsed is None:
+            raise ShobrError(
+                "could not parse a valid score (1-5) and reasoning from the LLM reply;"
+                " no review recorded"
+            )
+        return parsed
+
+    score, reasoning = retry_llm_task(score_task)
     _record_review(row, score, reasoning, _ReviewKind.AI)
 
 
@@ -769,28 +773,16 @@ def screen_llm_next(print_prompt: bool, force: bool = False) -> None:
     if print_prompt:
         _run_llm_for_row(row, print_prompt)
         return
-    if not _score_row_with_retries(row, force):
-        raise ShobrError(f"could not score posting {row['posting_id']}")
-
-
-_SCREEN_LLM_MAX_RETRIES = 2
-
-
-def _score_row_with_retries(row: EnrichedRow, force: bool = False) -> bool:
-    """Score one row through the LLM, retrying failures."""
-    for _ in range(_SCREEN_LLM_MAX_RETRIES + 1):
-        try:
-            _run_llm_for_row(row, False, force)
-        except ShobrError as exc:
-            print(exc, file=sys.stderr)
-            continue
-        return True
-    return False
+    try:
+        _run_llm_for_row(row, False, force)
+    except ShobrError as exc:
+        raise ShobrError(f"could not score posting {row['posting_id']}: {exc}") from exc
 
 
 def screen_llm_all(force: bool = False) -> None:
     """Record LLM screenings for every enriched passing lead with no AI or
-    human review yet, retrying failures. Skips stale rows unless forced."""
+    human review yet, stopping at the first failure. Skips stale rows unless
+    forced."""
     rows = get_enriched_rows()
     _load_profile()  # fail fast on invalid profile
     threshold = load_config()["stale_after_days"]
@@ -811,25 +803,28 @@ def screen_llm_all(force: bool = False) -> None:
             f" {threshold} days ago; skipping stale rows"
             + ("" if force else " (pass --force to score them anyway)")
         )
-    rows = {
-        pid: row
-        for pid, row in sorted(rows.items(), key=lambda kv: is_stale(kv[1], threshold))
-        if force or row["posting_id"] not in skipped
-    }
+    ordered = sorted(
+        (row for row in pending if force or row["posting_id"] not in skipped),
+        key=lambda row: is_stale(row, threshold),
+    )
+    to_score = {store_key(row["provider"], row["posting_id"]): row for row in ordered}
+    total = len(to_score)
     scored = 0
-    failed: list[str] = []
     while True:
         screened = project_screening(current_provider().name)["rows"]
-        row = oldest_missing_review(rows, screened, "ai", exclude=frozenset(failed))
+        row = oldest_missing_review(to_score, screened, "ai")
         if row is None:
             break
-        if _score_row_with_retries(row, force):
-            scored += 1
-        else:
-            failed.append(row["posting_id"])
-    print(f"Scored {scored} leads.")
-    if failed:
-        raise ShobrError(f"Failed to score {len(failed)}: {', '.join(failed)}")
+        print_batch_progress("Scoring", scored + 1, total, row)
+        try:
+            _run_llm_for_row(row, False, force)
+        except ShobrError as exc:
+            print_batch_done("Scored", scored, total, "leads")
+            raise ShobrError(
+                f"screen-llm-all stopped at {row_header(row)}: {exc}", code=exc.code
+            ) from exc
+        scored += 1
+    print_batch_done("Scored", scored, total, "leads")
     if scored == 0 and skipped:
         raise ShobrError(f"All {len(skipped)} pending rows stale; re-enrich first or pass --force")
 

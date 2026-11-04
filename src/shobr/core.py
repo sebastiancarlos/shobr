@@ -338,6 +338,33 @@ def row_header(row: Mapping[str, object]) -> str:
     return f"[{row['posting_id']}]"
 
 
+def retry_llm_task[T](task: Callable[[], T]) -> T:
+    """Run one LLM task, retrying completion and parse failures alike.
+
+    Callers pass a closure that performs a completion plus its own parse, so a
+    garbled reply consumes the same budget as a transport error. The last error
+    is re-raised once the three attempts run out.
+    """
+    error: ShobrError | None = None
+    for _ in range(3):
+        try:
+            return task()
+        except ShobrError as exc:
+            error = exc
+    assert error is not None
+    raise error
+
+
+def print_batch_progress(verb: str, index: int, total: int, row: Mapping[str, object]) -> None:
+    """Print one `Verb i/n: [company] id (title)` batch progress line."""
+    print(f"{verb} {index}/{total}: {row_header(row)} ({row['title']})")
+
+
+def print_batch_done(verb: str, done: int, total: int, noun: str) -> None:
+    """Print one `Verb done/total noun.` batch summary line."""
+    print(f"{verb} {done}/{total} {noun}.")
+
+
 def rejected_tag(reason: str) -> str:
     """A red (REJECTED: ...) tag with quoted spans in blue."""
     inner = "".join(

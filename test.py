@@ -318,11 +318,18 @@ class FakeLLMServer:
         }
     )
 
-    def __init__(self) -> None:
-        """Reset server handles and call tracking."""
+    def __init__(self, errors: int = 0) -> None:
+        """Reset server handles and call tracking.
+
+        `errors` makes the first N completion requests fail with HTTP 400, a
+        cover prompt containing SHOBR-FAILCOVER always fails, and any prompt
+        containing SHOBR-FAILSCORE always fails, so tests can force transport
+        failures at chosen steps.
+        """
         self._server: http.server.ThreadingHTTPServer
         self._thread: threading.Thread
         self.calls: list[str] = []
+        self.errors = errors
 
     def __enter__(self) -> FakeLLMServer:
         """Start the fake OpenAI endpoint."""
@@ -331,6 +338,7 @@ class FakeLLMServer:
         edits_reply = self.TAILOR_EDITS_REPLY
         cover_reply = self.TAILOR_COVER_REPLY
         rewrite_reply = self.TAILOR_REWRITE_REPLY
+        errors = self.errors
         calls: list[str] = []
         self.calls = calls
 
@@ -357,6 +365,15 @@ class FakeLLMServer:
                 req = json.loads(self.rfile.read(length))
                 content = req["messages"][-1]["content"]
                 calls.append(content)
+
+                if len(calls) <= errors or (
+                    '"cover_md"' in content and "SHOBR-FAILCOVER" in content
+                ):
+                    self._send(400, {"error": {"message": "fake llm failure"}})
+                    return
+                if "SHOBR-FAILSCORE" in content:
+                    self._send(400, {"error": {"message": "fake llm failure"}})
+                    return
 
                 filler = "- filler bullet line to overflow the page/company stuff\n"
                 bloat_md = "# Test Candidate\n\n" + filler * 300
@@ -4107,7 +4124,7 @@ print("ok")
 
                 result = shobr("screen-llm-all", env=env)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("Scored 1", result.stdout)
+                self.assertIn("Scored 1/1 leads.", result.stdout)
 
                 events_path = data_home.shobr_data / "screening" / "events.jsonl"
                 events = [json.loads(line) for line in events_path.read_text().splitlines() if line]
@@ -4116,7 +4133,7 @@ print("ok")
 
                 result = shobr("screen-llm-all", env=env)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("Scored 0", result.stdout)
+                self.assertIn("Scored 0/0 leads.", result.stdout)
 
     def test_screen_llm_all_retries_then_fails(self) -> None:
         """screen-llm-all retries an unparseable reply and reports the
@@ -4134,10 +4151,52 @@ print("ok")
 
                 result = shobr("screen-llm-all", env=env)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Failed to score 1", result.stderr)
-                self.assertIn("5550000001", result.stdout)
+                self.assertIn("screen-llm-all stopped at [FakeCo] 5550000001", result.stderr)
+                self.assertIn("Scored 0/1 leads.", result.stdout)
                 self.assertEqual(len(llm_server.calls), 3)
                 self.assertFalse((data_home.shobr_data / "screening").exists())
+
+    def test_screen_llm_retries_completion_errors(self) -> None:
+        """Completion errors share the three-attempt budget with parse errors,
+        and a later attempt can succeed."""
+        with TestDataHome(name="screen-llm-retries") as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = {**data_home.env, **seed_test_profile(data_home)}
+
+            with FakeLLMServer(errors=2) as llm_server:
+                env = {**env, **llm_server.env}
+
+                result = shobr("screen-llm-all", env=env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Scored 1/1 leads.", result.stdout)
+                self.assertEqual(len(llm_server.calls), 3)
+
+            events_path = data_home.shobr_data / "screening" / "events.jsonl"
+            events = [json.loads(line) for line in events_path.read_text().splitlines() if line]
+            self.assertEqual(len(events), 1)
+
+    def test_screen_llm_all_stops_at_first_failure(self) -> None:
+        """screen-llm-all aborts after one row exhausts its retries, leaving
+        the remaining rows untouched."""
+        with TestDataHome(name="screen-llm-stop") as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            seed_minimal_lead(data_home, posting_id="5550000011")
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                job_description="SHOBR-FAILSCORE Test job.",
+            )
+            env = {**data_home.env, **seed_test_profile(data_home)}
+
+            with FakeLLMServer() as llm_server:
+                env = {**env, **llm_server.env}
+
+                result = shobr("screen-llm-all", "--force", env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("screen-llm-all stopped at [TestCo] 5550000001", result.stderr)
+                self.assertIn("Scored 0/2 leads.", result.stdout)
+                self.assertEqual(len(llm_server.calls), 3)
+                self.assertFalse((data_home.shobr_data / "screening" / "events.jsonl").exists())
 
     def test_screen_llm_next_print_prompt(self) -> None:
         """screen-llm-next --print-prompt prints the prompt for the oldest
@@ -4467,7 +4526,7 @@ print("ok")
             with FakeLLMServer() as llm_server:
                 result = shobr("tailor-all", env={**env, **llm_server.env})
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("Built 2 packages.", result.stdout)
+                self.assertIn("Built 2/2 packages.", result.stdout)
             tailored = stored_rows(data_home.shobr_data / "tailoring" / "tailoring.json")
             self.assertEqual(set(tailored), {stored_key("5550000001"), stored_key("5550000011")})
 
@@ -4487,7 +4546,7 @@ print("ok")
                 result = shobr("tailor-all", env={**env, **llm_server.env})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("1 of 2 rows", result.stdout)
-                self.assertIn("Built 1 packages.", result.stdout)
+                self.assertIn("Built 1/1 packages.", result.stdout)
             tailored = stored_rows(data_home.shobr_data / "tailoring" / "tailoring.json")
             self.assertEqual(set(tailored), {stored_key("5550000001")})
 
@@ -4509,7 +4568,7 @@ print("ok")
             with FakeLLMServer() as llm_server:
                 result = shobr("tailor-all", "--force", env={**env, **llm_server.env})
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("Built 1 packages.", result.stdout)
+                self.assertIn("Built 1/1 packages.", result.stdout)
 
     def test_tailor_garbage_reply_builds_nothing(self) -> None:
         """tailor (live) on an unparseable reply writes nothing: no app dir,
@@ -4536,6 +4595,46 @@ print("ok")
                 app_dir = data_home.path / "cv" / "applications" / "fakeco-5550000001"
                 self.assertFalse(app_dir.exists())
                 self.assertFalse((data_home.shobr_data / "tailoring").exists())
+
+    def test_tailor_all_failure_rolls_back_and_stops(self) -> None:
+        """A cover failure removes the app dir, records a cleanup commit, and
+        aborts tailor-all before the next row."""
+        with TestDataHome(name="tailor-rollback") as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            seed_minimal_lead(data_home, posting_id="5550000011")
+            env = {
+                **data_home.env,
+                **seed_test_profile(data_home),
+                **seed_test_cv(data_home),
+            }
+            seed_human_review(data_home)
+            seed_human_review(data_home, posting_id="5550000011", score=5)
+            seed_enrichment_event(
+                data_home,
+                posting_id="5550000001",
+                company="FailCo SHOBR-FAILCOVER",
+            )
+
+            with FakeLLMServer() as llm_server:
+                env = {**env, **llm_server.env}
+
+                result = shobr("tailor-all", "--force", env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("tailor-all stopped at", result.stderr)
+                self.assertIn("Built 0/2 packages.", result.stdout)
+                self.assertEqual(len(llm_server.calls), 4)
+
+            cv_dir = data_home.path / "cv"
+            self.assertEqual(list((cv_dir / "applications").glob("*555000000*")), [])
+            log = subprocess.run(
+                ["git", "log", "--format=%s"],
+                cwd=cv_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertIn("rollback failed attempt", log.stdout)
+            self.assertFalse((data_home.shobr_data / "tailoring").exists())
 
     def test_tailor_refuses_dirty_cv(self) -> None:
         """tailor-next refuses when the cv worktree has uncommitted changes,
@@ -5055,7 +5154,7 @@ print("ok")
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("enrich-all", result.stdout)
                     self.assertIn("Enriching 1/1", result.stdout)
-                    self.assertIn("Enriched 1 leads.", result.stdout)
+                    self.assertIn("Enriched 1/1 leads.", result.stdout)
                     enriched = stored_rows(data_home.shobr_data / "enrichment" / "enrichment.json")
                     self.assertIn(stored_key("5550000001"), enriched)
                     self.assertTrue(enriched[stored_key("5550000001")]["actionable"])
@@ -5090,7 +5189,7 @@ print("ok")
                 result = shobr("next", env=env, input_text="a\n")
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("screen-llm-all", result.stdout)
-                self.assertIn("Scored 2 leads.", result.stdout)
+                self.assertIn("Scored 2/2 leads.", result.stdout)
 
                 events_path = data_home.shobr_data / "screening" / "events.jsonl"
                 events = [json.loads(line) for line in events_path.read_text().splitlines() if line]
@@ -5196,7 +5295,7 @@ print("ok")
                 result = shobr("next", env={**env, **llm_server.env}, input_text="a\n")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("tailor-all", result.stdout)
-                self.assertIn("Built 2 packages.", result.stdout)
+                self.assertIn("Built 2/2 packages.", result.stdout)
 
             tailored = stored_rows(data_home.shobr_data / "tailoring" / "tailoring.json")
             self.assertEqual(
@@ -6221,7 +6320,7 @@ print("ok")
                 result = shobr("screen-llm-all", env={**env, **llm_server.env})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("1 of 2 rows to score", result.stdout)
-                self.assertIn("Scored 1 leads.", result.stdout)
+                self.assertIn("Scored 1/1 leads.", result.stdout)
                 self.assertIn("FreshCo", result.stdout)
 
     def test_screen_llm_all_force_scores_stale(self) -> None:
@@ -6244,7 +6343,7 @@ print("ok")
             with FakeLLMServer() as llm_server:
                 result = shobr("screen-llm-all", "--force", env={**env, **llm_server.env})
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("Scored 2 leads.", result.stdout)
+                self.assertIn("Scored 2/2 leads.", result.stdout)
                 self.assertLess(result.stdout.index("FreshCo"), result.stdout.index("StaleCo"))
 
 
@@ -6803,7 +6902,7 @@ class TestProviderCLI(unittest.TestCase):
                     self.assertEqual(enriched.returncode, 0, enriched.stderr)
                     self.assertIn("Enriching 1/2", enriched.stdout)
                     self.assertIn("Enriching 2/2", enriched.stdout)
-                    self.assertIn("Enriched 2 leads.", enriched.stdout)
+                    self.assertIn("Enriched 2/2 leads.", enriched.stdout)
                     self.assertIn("Test Engineer", enriched.stdout)
                     self.assertIn("Second Engineer", enriched.stdout)
                     self.assertIn("Or through Browser Fake:", enriched.stdout)
