@@ -500,38 +500,40 @@ def tailor_posting_id(posting_id: str, print_prompt: bool, force: bool = False) 
     _run_tailor_for_row(row, print_prompt, force)
 
 
-def oldest_tailorable(
+def pending_tailorable(
     enriched: list[EnrichedRow],
     screened: dict[str, ScreeningRow],
     tailored: dict[str, TailoringRow],
-) -> EnrichedRow | None:
-    """Oldest pursue row with no package yet, still passing enrichment."""
-    tailored_ids = set(tailored)
-    for row in enriched:
-        sr = screened.get(store_key(row["provider"], row["posting_id"]))
-        if (
-            sr is not None
-            and sr["decision"] == ReviewDecision.PURSUE
-            and store_key(row["provider"], row["posting_id"]) not in tailored_ids
-            and row["actionable"]
-        ):
-            return row
-    return None
+) -> list[EnrichedRow]:
+    """Pursue rows with no package yet, still passing enrichment.
+
+    Empty when the current board has no per-application tailoring.
+    """
+    if not current_provider().supports_tailoring:
+        return []
+    return [
+        row
+        for row in enriched
+        if (sr := screened.get(store_key(row["provider"], row["posting_id"]))) is not None
+        and sr["decision"] == ReviewDecision.PURSUE
+        and store_key(row["provider"], row["posting_id"]) not in tailored
+        and row["actionable"]
+    ]
 
 
 def tailor_next(print_prompt: bool, force: bool = False) -> None:
     """Build the package for the oldest pursue row with no package yet."""
     _require_tailoring()
     rows = get_enriched_rows()
-    row = oldest_tailorable(
+    pending = pending_tailorable(
         list(rows.values()),
         project_screening(current_provider().name)["rows"],
         project_tailoring(current_provider().name)["rows"],
     )
-    if row is None:
+    if not pending:
         print("nothing to tailor")
         return
-    _run_tailor_for_row(row, print_prompt, force)
+    _run_tailor_for_row(pending[0], print_prompt, force)
 
 
 def tailor_all(force: bool = False) -> None:
@@ -544,15 +546,11 @@ def tailor_all(force: bool = False) -> None:
     rows = get_enriched_rows()
     threshold = load_config()["stale_after_days"]
     screened = project_screening(current_provider().name)["rows"]
-    pending = [
-        row
-        for row in rows.values()
-        if (sr := screened.get(store_key(row["provider"], row["posting_id"]))) is not None
-        and sr["decision"] == ReviewDecision.PURSUE
-        and store_key(row["provider"], row["posting_id"])
-        not in project_tailoring(current_provider().name)["rows"]
-        and row["actionable"]
-    ]
+    pending = pending_tailorable(
+        list(rows.values()),
+        screened,
+        project_tailoring(current_provider().name)["rows"],
+    )
     skipped = sorted(row["posting_id"] for row in pending if not force and is_stale(row, threshold))
     if skipped:
         print(

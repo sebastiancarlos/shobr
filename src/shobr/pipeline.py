@@ -33,6 +33,7 @@ from .screening import (
 )
 from .tailoring import (
     TailoringRow,
+    pending_tailorable,
     project_tailoring,
     tailor_all,
     tailor_next,
@@ -106,19 +107,12 @@ def _pending_ai_screening(
 
 
 def _pending_tailoring(
-    screened: dict[str, ScreeningRow], tailored_ids: set[str], enriched: list[EnrichedRow]
+    screened: dict[str, ScreeningRow],
+    tailored: dict[str, TailoringRow],
+    enriched: list[EnrichedRow],
 ) -> int:
     """Pursue rows with no package yet, still passing enrichment."""
-    if not current_provider().supports_tailoring:
-        return 0
-    passing = {row["posting_id"] for row in enriched if row["actionable"]}
-    return sum(
-        1
-        for sr in screened.values()
-        if sr["decision"] == ReviewDecision.PURSUE
-        and sr["posting_id"] not in tailored_ids
-        and sr["posting_id"] in passing
-    )
+    return len(pending_tailorable(enriched, screened, tailored))
 
 
 def _pending_review_ids(
@@ -269,7 +263,7 @@ def print_status() -> None:
     ]
     if tailoring_supported:
         screening_rows.append(
-            ("Pending Tailoring:", _pending_tailoring(screened, tailored_ids, enriched), GREEN)
+            ("Pending Tailoring:", _pending_tailoring(screened, tailored, enriched), GREEN)
         )
     else:
         screening_rows.append(("Pending Review:", len(pending_review_ids), GREEN))
@@ -440,16 +434,12 @@ def _run_next() -> None:
             screen_next(None, None)
             return
 
-    if pending := _pending_tailoring(screened, _ids(tailored), enriched):
+    if pending := _pending_tailoring(screened, tailored, enriched):
         threshold = load_config()["stale_after_days"]
         stale_rows = [
             row
-            for row in enriched
-            if (sr := screened.get(store_key(row["provider"], row["posting_id"]))) is not None
-            and sr["decision"] == ReviewDecision.PURSUE
-            and store_key(row["provider"], row["posting_id"]) not in tailored
-            and row["actionable"]
-            and is_stale(row, threshold)
+            for row in pending_tailorable(enriched, screened, tailored)
+            if is_stale(row, threshold)
         ]
         stale_bit = f" ({len(stale_rows)} stale)" if stale_rows else ""
         print(f"{pending} pursue rows awaiting tailoring{stale_bit}.")
