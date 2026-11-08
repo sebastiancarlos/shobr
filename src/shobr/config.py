@@ -214,8 +214,8 @@ def _parse_config(data: dict) -> Config:
 
 
 @functools.lru_cache(maxsize=1)
-def load_config() -> Config:
-    """Read and validate config.toml, raising on any problem."""
+def _load_config() -> Config:
+    """Read and validate the top-level config.toml, without provider overrides."""
     return _parse_config(_raw_config())
 
 
@@ -225,6 +225,7 @@ def load_provider_config(name: str) -> Config:
 
     Only keys shobr knows at the top level are overridable.
     """
+    _load_config()  # validate the whole file, including every provider section
     raw = _raw_config()
     section = raw.get("providers", {}).get(name, {})
     if not isinstance(section, dict):
@@ -236,7 +237,7 @@ def load_provider_config(name: str) -> Config:
 
 def provider_options(name: str) -> dict[str, object]:
     """The raw `[providers.<name>]` section, provider-specific keys included."""
-    return cast(dict[str, object], load_config()["providers"].get(name, {}))
+    return cast(dict[str, object], _load_config()["providers"].get(name, {}))
 
 
 def _resolve_path(value: str) -> Path:

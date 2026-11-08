@@ -5,7 +5,6 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
-from .config import load_config
 from .core import ShobrError, shobr_command, store_key
 from .discovery import StoredJob, discover, project_discovery
 from .enrichment import (
@@ -18,7 +17,7 @@ from .enrichment import (
     is_stale,
     project_enrichment,
 )
-from .providers.base import current_provider
+from .providers.base import current_config, current_provider
 from .screening import (
     SCORE_COLORS,
     ReviewDecision,
@@ -207,7 +206,7 @@ def print_status() -> None:
     filtered = failing - closed
     stale: set[str] = set()
     if enriched:
-        threshold = load_config()["stale_after_days"]
+        threshold = current_config()["stale_after_days"]
         stale = {row["posting_id"] for row in enriched if is_stale(row, threshold)}
 
     def _stale_suffix(pids: Iterable[str]) -> str:
@@ -385,7 +384,7 @@ def _run_next() -> None:
         ai_reviewed = {sr["posting_id"] for sr in screened.values() if sr["ai"] is not None}
         lacking = _pending_ai_screening(enriched, human_reviewed, ai_reviewed)
         extra = f" ({lacking} lacking LLM screening)" if lacking else ""
-        threshold = load_config()["stale_after_days"]
+        threshold = current_config()["stale_after_days"]
         stale_rows = [
             row
             for row in enriched
@@ -435,7 +434,7 @@ def _run_next() -> None:
             return
 
     if pending := _pending_tailoring(screened, tailored, enriched):
-        threshold = load_config()["stale_after_days"]
+        threshold = current_config()["stale_after_days"]
         stale_rows = [
             row
             for row in pending_tailorable(enriched, screened, tailored)

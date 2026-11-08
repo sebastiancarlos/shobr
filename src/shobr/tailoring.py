@@ -9,7 +9,7 @@ from typing import NoReturn, TypedDict, cast
 
 from .ai import chat_completion, parse_json_object
 from .color import BLUE, BOLD, GREEN, RESET, YELLOW
-from .config import load_config, resolve_cv_toolchain_dir
+from .config import resolve_cv_toolchain_dir
 from .core import (
     DataKind,
     ShobrError,
@@ -48,7 +48,7 @@ from .enrichment import (
     staleness_tag,
     validity_tag,
 )
-from .providers.base import current_provider
+from .providers.base import current_config, current_provider
 from .screening import (
     PROFILE_FILES,
     TAILOR_FILES,
@@ -146,7 +146,7 @@ def print_tailored() -> None:
             )
             print(stage_line(row["provider"], row["posting_id"], DataKind.TAILORING))
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-            threshold = load_config()["stale_after_days"]
+            threshold = current_config()["stale_after_days"]
             print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
             built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
             print(f"  - Tailored At: {built}")
@@ -480,7 +480,7 @@ def _run_tailor_for_row(row: EnrichedRow, print_prompt: bool, force: bool = Fals
             print(f"=== PROMPT: {name} ===")
             print(prompt)
         return
-    refuse_if_stale(row, load_config()["stale_after_days"], force)
+    refuse_if_stale(row, current_config()["stale_after_days"], force)
     _run_tailor_live(row, profile)
 
 
@@ -544,7 +544,7 @@ def tailor_all(force: bool = False) -> None:
     """
     _require_tailoring()
     rows = get_enriched_rows()
-    threshold = load_config()["stale_after_days"]
+    threshold = current_config()["stale_after_days"]
     screened = project_screening(current_provider().name)["rows"]
     pending = pending_tailorable(
         list(rows.values()),

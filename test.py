@@ -6023,6 +6023,33 @@ print("ok")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("stale_after_days", result.stderr)
 
+    def test_provider_stale_threshold_applies_to_all_stages(self) -> None:
+        """a provider stale_after_days override reaches every stage."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="5550000001")
+            filters_path = data_home.shobr_config / "config.toml"
+            filters_path.write_text(
+                filters_path.read_text(encoding="utf-8")
+                + "\n[providers.linkedin]\nstale_after_days = 36500\n",
+                encoding="utf-8",
+            )
+            enriched = shobr("enriched", env=data_home.env)
+            self.assertEqual(enriched.returncode, 0, enriched.stderr)
+            self.assertNotIn("Stale:", enriched.stdout)
+
+            status = shobr("status", env=data_home.env)
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertNotIn("(1 stale)", status.stdout)
+
+            nxt = shobr("next", env=data_home.env, input_text="n\n" * 10)
+            self.assertEqual(nxt.returncode, 0, nxt.stderr)
+            self.assertNotIn("Re-enrich it first?", nxt.stdout)
+
+            seed_tailored_package(data_home)
+            review = shobr("review", "5550000001", env=data_home.env)
+            self.assertEqual(review.returncode, 0, review.stderr)
+            self.assertNotIn("Stale:", review.stdout)
+
     def test_stale_threshold_boundary(self) -> None:
         """2 days old is fresh, 3 days old is stale (default threshold)."""
         with TestDataHome() as data_home:

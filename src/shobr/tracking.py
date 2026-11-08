@@ -5,7 +5,6 @@ from enum import StrEnum
 from typing import TypedDict, cast
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
-from .config import load_config
 from .core import (
     DataKind,
     ShobrError,
@@ -31,7 +30,7 @@ from .enrichment import (
     validity_tag,
     warn_if_stale,
 )
-from .providers.base import current_provider
+from .providers.base import current_config, current_provider
 from .screening import (
     ReviewDecision,
     pill_line,
@@ -184,7 +183,7 @@ def track_posting_id(posting_id: str, status: str, note: str | None) -> None:
             f"invalid status {status!r}; choose from " + ", ".join(s.value for s in TrackStatus)
         ) from None
     enriched, package = trackable_row(posting_id)
-    warn_if_stale(enriched, load_config()["stale_after_days"])
+    warn_if_stale(enriched, current_config()["stale_after_days"])
     _record_transition(enriched, package, track_status, note)
 
 
@@ -212,7 +211,7 @@ def print_tracked() -> None:
             print(f"  - Status: {color}{str(row['status']).upper()}{RESET}")
             print(f"  - Tracked At: {datetime.fromisoformat(row['tracked_at']).date().isoformat()}")
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-            threshold = load_config()["stale_after_days"]
+            threshold = current_config()["stale_after_days"]
             print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
             if row["note"]:
                 print(f"  - Note: {row['note']}")
@@ -226,7 +225,7 @@ def _print_review(enriched: EnrichedRow, package: TailoringRow | None) -> None:
         print(f"{row_header(enriched)}{validity_tag(enriched)}")
         print(f"  - {enriched['title']}")
         checked = datetime.fromisoformat(enriched["enriched_last_at"]).date().isoformat()
-        threshold = load_config()["stale_after_days"]
+        threshold = current_config()["stale_after_days"]
         print(f"  - Last Enriched At: {checked}{staleness_tag(enriched, threshold)}")
         if package is not None:
             built = datetime.fromisoformat(package["tailored_at"]).date().isoformat()

@@ -13,7 +13,6 @@ from .ai import chat_completion, parse_json_object
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
 from .config import (
     CONFIG_PATH,
-    load_config,
     load_provider_config,
     resolve_main_cv_path,
     resolve_profile_dir,
@@ -51,7 +50,7 @@ from .enrichment import (
     staleness_tag,
     validity_tag,
 )
-from .providers.base import current_provider
+from .providers.base import current_config, current_provider
 
 _PROFILE_TEMPLATE_SENTINEL = "SHOBR PROFILE TEMPLATE"
 
@@ -475,7 +474,7 @@ def print_screened(score_filter: str | None = None) -> None:
             print_screening_status(row, "  ")
             print(stage_line(row["provider"], row["posting_id"], DataKind.SCREENING))
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-            threshold = load_config()["stale_after_days"]
+            threshold = current_config()["stale_after_days"]
             print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
             scored = [
                 review["scored_at"] for review in (row["human"], row["ai"]) if review is not None
@@ -582,7 +581,7 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
         sections.append(f"## Company Description\n\n{company_description}")
     description_sections = "\n\n".join(sections)
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
-    threshold = load_config()["stale_after_days"]
+    threshold = current_config()["stale_after_days"]
     company_line = (
         same_company_line(row["company"], row["provider"], row["posting_id"], plain=True) or ""
     )
@@ -675,7 +674,7 @@ def _screen_row(
         raise ShobrError("give either both score and reason, or neither")
     print_enriched_row(row, short=True)
     _print_screening_line(row, screened)
-    refuse_if_stale(row, load_config()["stale_after_days"], force)
+    refuse_if_stale(row, current_config()["stale_after_days"], force)
     if score is not None and reason is not None:
         _record_review(row, score, reason, _ReviewKind.HUMAN)
         return
@@ -722,7 +721,7 @@ def _run_llm_for_row(row: EnrichedRow, print_prompt: bool, force: bool = False) 
     if print_prompt:
         print(prompt)
         return
-    refuse_if_stale(row, load_config()["stale_after_days"], force)
+    refuse_if_stale(row, current_config()["stale_after_days"], force)
     print(f"Sent AI review request for lead {BOLD}{row_header(row)} ({row['title']}){RESET}.")
     print("Waiting for response...")
 
@@ -785,7 +784,7 @@ def screen_llm_all(force: bool = False) -> None:
     forced."""
     rows = get_enriched_rows()
     _load_profile()  # fail fast on invalid profile
-    threshold = load_config()["stale_after_days"]
+    threshold = current_config()["stale_after_days"]
     screened = project_screening(current_provider().name)["rows"]
     pending = [
         row
