@@ -4942,6 +4942,63 @@ print("ok")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("has no package yet", result.stderr)
 
+    def test_show_prints_every_stage(self) -> None:
+        """show prints whatever exists for a posting at every stage."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            seed_provider_discovery(data_home, "linkedin", "100")
+            for posting_id in ("101", "102", "103"):
+                seed_minimal_lead(data_home, posting_id=posting_id)
+            seed_human_review(data_home, posting_id="102", score=4)
+            seed_human_review(data_home, posting_id="103", score=4)
+            seed_tailored_package(data_home, posting_id="103")
+
+            env = data_home.env
+
+            result = shobr("show", "100", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertIn("Stage: discovery", out)
+            self.assertIn("https://linkedin.example.test/jobs/100", out)
+            self.assertIn("First Discovered At:", out)
+            self.assertNotIn("Screening:", out)
+
+            result = shobr("show", "101", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertIn("Stage: enrichment", out)
+            self.assertIn("Last Enriched At:", out)
+            self.assertIn("Screening: N/A", out)
+            self.assertIn("UNTRACKED", out)
+            self.assertIn("Description:", out)
+
+            result = shobr("show", "102", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertIn("Stage: screening (PURSUE)", out)
+            self.assertIn("Human: 4", out)
+            self.assertIn("Decision: PURSUE", out)
+
+            result = shobr("show", "103", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertIn("Stage: tailoring", out)
+            self.assertIn("Tailored At:", out)
+            self.assertIn("Slug: testco-103", out)
+            self.assertIn("seeded resume", out)
+
+            result = shobr("track", "103", "applied", "--note", "via portal", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = shobr("show", "103", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertIn("Stage: tracking (APPLIED)", out)
+            self.assertIn("via portal", out)
+
+            result = shobr("show", "999", env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not found in leads or enrichment store", result.stderr)
+
     def test_next_empty_home(self) -> None:
         """'shobr next' on a fresh data home offers a fetch, then idles."""
         with TestDataHome() as data_home:

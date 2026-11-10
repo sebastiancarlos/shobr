@@ -16,7 +16,7 @@ from .enrichment import (
     print_enriched,
 )
 from .notification import notifications, notifications_local
-from .pipeline import next_posting_id, print_status, run_next
+from .pipeline import next_posting_id, print_status, run_next, show_posting
 from .providers.base import DEFAULT_PROVIDER, all_providers, set_provider
 from .screening import (
     init_profile,
@@ -253,6 +253,13 @@ def main() -> None:
     review_parser.add_argument("posting_id", help="posting id to review")
     _provider_arg(review_parser)
 
+    show_parser = sub.add_parser(
+        "show",
+        help="print every stored detail for a posting, whatever stage it reached",
+    )
+    show_parser.add_argument("posting_id", help="posting id to show")
+    _provider_arg(show_parser)
+
     for name, help_text in [
         ("review-next", "print the oldest untracked posting"),
         ("status", "print the pipeline status overview"),
@@ -313,6 +320,7 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         "tracked": print_tracked,
         "track": lambda: track_posting_id(args.posting_id, args.status, args.note),
         "review": lambda: review_posting_id(args.posting_id),
+        "show": lambda: show_posting(args.posting_id),
         "review-next": review_next,
         "status": print_status,
         "next": lambda: next_posting_id(args.posting_id) if args.posting_id else run_next(),

@@ -5,8 +5,8 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
-from .core import ShobrError, shobr_command, store_key
-from .discovery import StoredJob, discover, project_discovery
+from .core import ShobrError, paged, shobr_command, store_key
+from .discovery import StoredJob, discover, print_lead, project_discovery
 from .enrichment import (
     DEFAULT_ENRICH_ALL_DELAY,
     EnrichedRow,
@@ -42,6 +42,7 @@ from .tracking import (
     TRACK_STATUS_COLORS,
     TrackedRow,
     TrackStatus,
+    print_review,
     project_tracking,
     review_next,
     review_posting_id,
@@ -368,6 +369,22 @@ def print_status() -> None:
                 for line in histogram:
                     print(line)
         print()
+
+
+def show_posting(posting_id: str) -> None:
+    """Print every stored detail for one posting, whatever stage it reached."""
+    leads, enriched, _, tailored, _ = _load_stores()
+    key = store_key(current_provider().name, posting_id)
+    lead = next((row for row in leads if row["posting_id"] == posting_id), None)
+    enriched_row = next((row for row in enriched if row["posting_id"] == posting_id), None)
+    if lead is None and enriched_row is None:
+        raise ShobrError(f"posting {posting_id} not found in leads or enrichment store")
+    if enriched_row is None:
+        assert lead is not None
+        with paged():
+            print_lead(lead)
+        return
+    print_review(enriched_row, tailored.get(key), lead=lead, show_stage=True)
 
 
 def _confirm(prompt: str) -> bool:

@@ -1,5 +1,6 @@
 """The tracking stage: user-recorded submission statuses."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TypedDict, cast
@@ -18,6 +19,7 @@ from .core import (
     same_company_line,
     shobr_command,
     short_path,
+    stage_line,
     store_key,
     store_path,
 )
@@ -219,11 +221,26 @@ def print_tracked() -> None:
         print()
 
 
-def _print_review(enriched: EnrichedRow, package: TailoringRow | None) -> None:
-    """Print the full package for one row, minus package parts when absent."""
+def print_review(
+    enriched: EnrichedRow,
+    package: TailoringRow | None,
+    *,
+    lead: Mapping[str, object] | None = None,
+    show_stage: bool = False,
+) -> None:
+    """Print the full stored detail for one enriched posting (and above)."""
     with paged():
         print(f"{row_header(enriched)}{validity_tag(enriched)}")
+        if show_stage:
+            print(stage_line(enriched["provider"], enriched["posting_id"], DataKind.DISCOVERY))
         print(f"  - {enriched['title']}")
+        if lead is not None:
+            print(f"  - Posting URL: {lead['posting_url']}")
+            seen = datetime.fromisoformat(str(lead["first_seen_at"])).date().isoformat()
+            print(f"  - First Discovered At: {seen}")
+            method = lead["discovered_method"]
+            if isinstance(method, Mapping):
+                print(f"  - Discovered Via: {method['type']}")
         checked = datetime.fromisoformat(enriched["enriched_last_at"]).date().isoformat()
         threshold = current_config()["stale_after_days"]
         print(f"  - Last Enriched At: {checked}{staleness_tag(enriched, threshold)}")
@@ -281,7 +298,7 @@ def _print_review(enriched: EnrichedRow, package: TailoringRow | None) -> None:
 def review_posting_id(posting_id: str) -> None:
     """Print the full listing for a specific trackable posting."""
     enriched, package = trackable_row(posting_id)
-    _print_review(enriched, package)
+    print_review(enriched, package)
 
 
 def review_next() -> None:
@@ -307,7 +324,7 @@ def review_next() -> None:
             and sr["decision"] == ReviewDecision.PURSUE
         ]
     for row, package in candidates:
-        _print_review(row, package)
+        print_review(row, package)
         track_command = shobr_command(f"track {row['posting_id']} applied")
         print(f"If you applied, track it: {BLUE}{track_command}{RESET}")
         return

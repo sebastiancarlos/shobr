@@ -134,6 +134,9 @@ You can run:
   - Have SHOBR automatically prompt you for the next logical action across the
     entire pipeline (rather than running the manual, "plumbing" command
     directly).
+- **`shobr show <posting_id>`**
+  - Prints every stored detail for one posting at any stage, including the
+    furthest stage reached.
 
 **Example `shobr status` output:**
 

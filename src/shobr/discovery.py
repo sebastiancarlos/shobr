@@ -216,6 +216,25 @@ def project_discovery(provider: str | None = None) -> DiscoveredStore:
     return {"fetched_at": events[-1]["fetched_at"], "rows": rows}
 
 
+def print_lead(row: StoredJob, *, stage: bool = True, suffix: str = "") -> None:
+    """Print one stored lead with its discovery metadata."""
+    tag = suffix
+    if not row["actionable"]:
+        assert row["rejected_reason"] is not None
+        tag += rejected_tag(row["rejected_reason"])
+    print(f"[{company_label(row)}]{tag}")
+    print(f"  - {row['title']}")
+    if row["location"]:
+        print(f"  - {row['location']}")
+    print(f"  - {row['posting_url']}")
+    seen = datetime.fromisoformat(row["first_seen_at"]).date().isoformat()
+    print(f"  - First Discovered At: {seen}")
+    if line := same_company_line(row["company"], row["provider"], row["posting_id"]):
+        print(line)
+    if stage:
+        print(stage_line(row["provider"], row["posting_id"], DataKind.DISCOVERY))
+
+
 def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None = None) -> None:
     """Print the projected leads store. First seen in `mark_new_from` get `(NEW)`."""
     with paged():
@@ -233,24 +252,12 @@ def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None =
             )
         print()
         for row in leads["rows"]:
-            tag = (
+            new_tag = (
                 f" {GREEN}(NEW){RESET}"
                 if mark_new_from and row["first_seen_at"] == mark_new_from
                 else ""
             )
-            if not row["actionable"]:
-                assert row["rejected_reason"] is not None
-                tag += rejected_tag(row["rejected_reason"])
-            print(f"[{company_label(row)}]{tag}")
-            print(f"  - {row['title']}")
-            if row["location"]:
-                print(f"  - {row['location']}")
-            print(f"  - {row['posting_url']}")
-            seen = datetime.fromisoformat(row["first_seen_at"]).date().isoformat()
-            print(f"  - First Discovered At: {seen}")
-            if line := same_company_line(row["company"], row["provider"], row["posting_id"]):
-                print(line)
-            print(stage_line(row["provider"], row["posting_id"], DataKind.DISCOVERY))
+            print_lead(row, suffix=new_tag)
 
         reasons = Counter(
             row["rejected_reason"] for row in leads["rows"] if row["rejected_reason"] is not None
