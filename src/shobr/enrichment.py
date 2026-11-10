@@ -451,7 +451,8 @@ def enrich_next() -> None:
 
 
 def enrich_all(delay: float) -> None:
-    """Fetch details for every pending lead, stopping at the first failure.
+    """Fetch details for pending leads and stale pending rows, stopping at the
+    first failure.
 
     The delay is applied between fetches.
     """
@@ -462,12 +463,24 @@ def enrich_all(delay: float) -> None:
     leads = project_discovery(provider)
     enriched = project_enrichment(provider)
     pending = list(_pending_leads(leads, enriched))
-    if not pending:
+
+    # Local import avoids the pipeline/enrichment import cycle. The stale
+    # selection needs the screening, tailoring, and tracking stores.
+    from .pipeline import stale_pending_rows
+
+    leads_by_id = {row["posting_id"]: row for row in leads["rows"]}
+    stale_targets = [
+        leads_by_id[row["posting_id"]]
+        for row in stale_pending_rows()
+        if row["posting_id"] in leads_by_id
+    ]
+    targets = [*pending, *stale_targets]
+    if not targets:
         print("no leads to enrich")
         return
 
-    total = len(pending)
-    for index, target in enumerate(pending, start=1):
+    total = len(targets)
+    for index, target in enumerate(targets, start=1):
         if index > 1 and delay:
             time.sleep(delay)
         print_batch_progress("Enriching", index, total, target)

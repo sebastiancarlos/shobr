@@ -143,6 +143,44 @@ def _pending_review(
     return len(_pending_review_ids(screened, tailored_ids, tracked_ids, enriched))
 
 
+def stale_pending_rows() -> list[EnrichedRow]:
+    """Stale actionable rows still pending screening, tailoring, or review."""
+    _, enriched, screened, tailored, tracked = _load_stores()
+    if not enriched:
+        return []
+
+    threshold = current_config()["stale_after_days"]
+    tailored_ids = _ids(tailored)
+    tracked_ids = _ids(tracked)
+    review_ids = _pending_review_ids(screened, tailored_ids, tracked_ids, enriched)
+    active_keys: set[str] = set()
+
+    for row in enriched:
+        key = store_key(row["provider"], row["posting_id"])
+        if row["actionable"] and _needs_human_review(screened.get(key)):
+            active_keys.add(key)
+
+    active_keys.update(
+        store_key(row["provider"], row["posting_id"])
+        for row in pending_tailorable(enriched, screened, tailored)
+    )
+    active_keys.update(
+        store_key(row["provider"], row["posting_id"])
+        for row in enriched
+        if row["posting_id"] in review_ids
+    )
+
+    stale = [
+        row
+        for row in enriched
+        if store_key(row["provider"], row["posting_id"]) in active_keys
+        and row["posting_id"] not in tracked_ids
+        and is_stale(row, threshold)
+    ]
+    stale.sort(key=lambda row: row["enriched_last_at"])
+    return stale
+
+
 def print_status() -> None:
     """Print the pipeline status overview, sectioned per stage."""
     leads, enriched, screened, tailored, tracked = _load_stores()

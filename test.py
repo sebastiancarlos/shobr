@@ -7096,6 +7096,67 @@ class TestProviderCLI(unittest.TestCase):
                         (data_home.shobr_data / "enrichment" / "events.jsonl").exists()
                     )
 
+    def test_enrich_all_refreshes_stale_pending_rows(self) -> None:
+        """Bulk enrichment refreshes stale active rows, not tracked or fresh ones."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_provider_discovery(data_home, "linkedin", "100")
+            for posting_id in ("101", "102", "103", "104"):
+                seed_minimal_lead(data_home, posting_id=posting_id)
+            seed_minimal_lead(data_home, posting_id="105", fetched_at=now)
+
+            seed_human_review(data_home, posting_id="102", score=4)
+            seed_human_review(data_home, posting_id="103", score=4)
+            seed_tailored_package(data_home, posting_id="103")
+            _append_event(
+                data_home.shobr_data / "tailoring" / "events.jsonl",
+                {
+                    "tailored_at": "2026-09-13T00:00:00+00:00",
+                    "posting_id": "104",
+                    "provider": "linkedin",
+                    "slug": "testco-104",
+                    "app_dir": "/tmp/104",
+                    "rewrites": 0,
+                    "resume_md": "seeded resume",
+                    "cover_md": "seeded cover",
+                },
+            )
+            seed_human_review(data_home, posting_id="104", score=4)
+            seed_tracking(data_home, posting_id="104", status="applied")
+
+            result = shobr("setup", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = f"test-{os.getpid()}-shobr-enrich-all-stale"
+            detail = _read_fixture("job-detail.html")
+            pages: dict[str, str | list[str]] = {
+                f"/jobs/view/{posting_id}": detail for posting_id in range(100, 106)
+            }
+            with FakeLinkedInServer(pages) as server:
+                with TestBeachpatrolInstance(data_home.env, profile):
+                    env = {
+                        **data_home.env,
+                        "SHOBR_BEACHPATROL_PROFILE": profile,
+                        "SHOBR_LINKEDIN_BASE_URL": server.url,
+                    }
+                    result = shobr("enrich-all", "--delay", "1", env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Enriching 1/4", result.stdout)
+            self.assertIn("Enriching 4/4", result.stdout)
+            self.assertIn("Enriched 4/4 leads.", result.stdout)
+
+            events = [
+                json.loads(line)
+                for line in (data_home.shobr_data / "enrichment" / "events.jsonl")
+                .read_text()
+                .splitlines()
+                if line
+            ]
+            self.assertEqual(
+                {row["posting_id"] for row in events[5:]},
+                {"100", "101", "102", "103"},
+            )
+
 
 def _test_method_names() -> list[str]:
     """Every test id in unittest's default (alphabetical) order."""

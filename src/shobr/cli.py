@@ -138,7 +138,9 @@ def main() -> None:
     )
     enrich_all_parser = sub.add_parser(
         "enrich-all",
-        help="fetch details for every pending lead, stopping at the first failure",
+        help=(
+            "fetch details for pending leads and stale pending rows, stopping at the first failure"
+        ),
     )
     enrich_all_parser.add_argument(
         "--delay",
