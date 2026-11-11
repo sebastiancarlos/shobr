@@ -234,6 +234,9 @@ if it overflows.
   - Builds packages for every pursue-able job without one.
 - **`shobr tailored`**
   - Prints all generated packages.
+- **`shobr tailored --pending-review`**
+  - Prints only packages that have not been tracked yet, meaning the ones
+    awaiting review.
 
 ### 5. Tracking
 

@@ -4745,6 +4745,52 @@ print("ok")
             self.assertIn("fakeco-5550000001", result.stdout)
             self.assertIn("Rewrites: 0", result.stdout)
 
+    def test_tailored_pending_review_filters_tracked(self) -> None:
+        """tailored --pending-review hides packages already tracked."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home, posting_id="5550000001")
+            seed_minimal_lead(data_home, posting_id="5550000002")
+            seed_human_review(data_home, posting_id="5550000001")
+            seed_human_review(data_home, posting_id="5550000002")
+            for posting_id in ("5550000001", "5550000002"):
+                _append_event(
+                    data_home.shobr_data / "tailoring" / "events.jsonl",
+                    {
+                        "tailored_at": "2026-09-13T00:00:00+00:00",
+                        "posting_id": posting_id,
+                        "provider": "linkedin",
+                        "slug": f"testco-{posting_id}",
+                        "app_dir": f"/tmp/{posting_id}",
+                        "rewrites": 0,
+                        "resume_md": "seeded resume",
+                        "cover_md": "seeded cover",
+                    },
+                )
+            seed_tracking(data_home, posting_id="5550000001", status="applied")
+            env = data_home.env
+
+            result = shobr("tailored", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("2 tailored", result.stdout)
+            self.assertIn("5550000001", result.stdout)
+            self.assertIn("5550000002", result.stdout)
+
+            result = shobr("tailored", "--pending-review", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertIn("1 tailored", out)
+            self.assertNotIn("[TestCo] 5550000001", out)
+            self.assertIn("[TestCo] 5550000002", out)
+
+            result = shobr("track", "5550000002", "applied", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = shobr("tailored", "--pending-review", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertIn("0 tailored", out)
+            self.assertNotIn("5550000001", out)
+            self.assertNotIn("5550000002", out)
+
     def test_tailored_with_no_data(self) -> None:
         """'shobr tailored' on a fresh data home fails, writes nothing."""
         with TestDataHome() as data_home:

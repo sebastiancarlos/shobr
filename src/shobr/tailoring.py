@@ -125,17 +125,23 @@ def project_tailoring(provider: str | None = None) -> TailoredStore:
     return {"tailored_at": events[-1]["tailored_at"], "rows": rows}
 
 
-def print_tailored() -> None:
-    """Print every tailored package stored so far."""
+def print_tailored(pending_review: bool = False) -> None:
+    """Print tailored packages, optionally only those awaiting review."""
     with paged():
         require_events(DataKind.TAILORING)
         tailored = project_tailoring(current_provider().name)
+        rows = list(tailored["rows"].values())
+        if pending_review:
+            from .pipeline import pending_review_ids
 
-        print(f"{BLUE}{len(tailored['rows'])}{RESET} tailored")
+            pending = pending_review_ids()
+            rows = [row for row in rows if row["posting_id"] in pending]
+
+        print(f"{BLUE}{len(rows)}{RESET} tailored")
         print()
         assert event_log(DataKind.ENRICHMENT).exists(), "tailoring data implies enrichment data"
         enriched = project_enrichment(current_provider().name)
-        for row in tailored["rows"].values():
+        for row in rows:
             eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
             print(f"{BOLD}{row_header(eref)}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")

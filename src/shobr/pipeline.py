@@ -115,14 +115,12 @@ def _pending_tailoring(
     return len(pending_tailorable(enriched, screened, tailored))
 
 
-def _pending_review_ids(
-    screened: dict[str, ScreeningRow],
-    tailored_ids: set[str],
-    tracked_ids: set[str],
-    enriched: list[EnrichedRow],
-) -> set[str]:
+def pending_review_ids() -> set[str]:
     """Actionable posting ids awaiting review or tracking."""
+    _, enriched, screened, tailored, tracked = _load_stores()
     passing = {row["posting_id"] for row in enriched if row["actionable"]}
+    tailored_ids = _ids(tailored)
+    tracked_ids = _ids(tracked)
     if not current_provider().supports_tailoring:
         return {
             sr["posting_id"]
@@ -134,16 +132,6 @@ def _pending_review_ids(
     return {pid for pid in tailored_ids if pid not in tracked_ids and pid in passing}
 
 
-def _pending_review(
-    screened: dict[str, ScreeningRow],
-    tailored_ids: set[str],
-    tracked_ids: set[str],
-    enriched: list[EnrichedRow],
-) -> int:
-    """Packaged or directly trackable postings with no tracking event yet."""
-    return len(_pending_review_ids(screened, tailored_ids, tracked_ids, enriched))
-
-
 def stale_pending_rows() -> list[EnrichedRow]:
     """Stale actionable rows still pending screening, tailoring, or review."""
     _, enriched, screened, tailored, tracked = _load_stores()
@@ -151,9 +139,8 @@ def stale_pending_rows() -> list[EnrichedRow]:
         return []
 
     threshold = current_config()["stale_after_days"]
-    tailored_ids = _ids(tailored)
     tracked_ids = _ids(tracked)
-    review_ids = _pending_review_ids(screened, tailored_ids, tracked_ids, enriched)
+    review_ids = pending_review_ids()
     active_keys: set[str] = set()
 
     for row in enriched:
@@ -192,7 +179,7 @@ def print_status() -> None:
     tailored_ids = _ids(tailored)
     tracked_ids = _ids(tracked)
     tailoring_supported = current_provider().supports_tailoring
-    pending_review_ids = _pending_review_ids(screened, tailored_ids, tracked_ids, enriched)
+    pending_review_set = pending_review_ids()
 
     skip = sum(1 for sr in screened.values() if sr["decision"] == ReviewDecision.SKIP)
     pending_human = sum(
@@ -263,7 +250,7 @@ def print_status() -> None:
             for sr in screened.values()
             if sr["decision"] == ReviewDecision.PENDING and sr["posting_id"] in passing
         ),
-        "Pending Review:": _stale_suffix(pending_review_ids),
+        "Pending Review:": _stale_suffix(pending_review_set),
     }
     if tailoring_supported:
         stale_note["Pending Tailoring:"] = _stale_suffix(
@@ -304,12 +291,12 @@ def print_status() -> None:
             ("Pending Tailoring:", _pending_tailoring(screened, tailored, enriched), GREEN)
         )
     else:
-        screening_rows.append(("Pending Review:", len(pending_review_ids), GREEN))
+        screening_rows.append(("Pending Review:", len(pending_review_set), GREEN))
     review_rows = []
     if tailoring_supported:
         review_rows = [
             ("Packages Built:", len(tailored), BLUE),
-            ("Pending Review:", len(pending_review_ids), GREEN),
+            ("Pending Review:", len(pending_review_set), GREEN),
         ]
 
     sections: list[tuple[str, list[tuple[str, int, str]]]] = [
@@ -521,7 +508,7 @@ def _run_next() -> None:
             tailor_all(False)
             return
 
-    if _pending_review(screened, _ids(tailored), _ids(tracked), enriched):
+    if pending_review_ids():
         review_next()
         return
 

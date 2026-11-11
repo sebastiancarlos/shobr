@@ -206,7 +206,16 @@ def main() -> None:
         "screen-llm-all", help="score every unscored lead through the LLM"
     )
     _provider_arg(_force_arg(screen_llm_all_parser))
-    _provider_arg(sub.add_parser("tailored", help="print every tailored package stored so far"))
+    tailored_parser = sub.add_parser(
+        "tailored",
+        help="print every tailored package stored so far",
+    )
+    tailored_parser.add_argument(
+        "--pending-review",
+        action="store_true",
+        help="only print packages awaiting review (not tracked)",
+    )
+    _provider_arg(tailored_parser)
 
     tailor = sub.add_parser(
         "tailor",
@@ -313,7 +322,7 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         "screen-llm": lambda: screen_llm_posting_id(args.posting_id, args.print_prompt, args.force),
         "screen-llm-next": lambda: screen_llm_next(args.print_prompt, args.force),
         "screen-llm-all": lambda: screen_llm_all(args.force),
-        "tailored": print_tailored,
+        "tailored": lambda: print_tailored(args.pending_review),
         "tailor": lambda: tailor_posting_id(args.posting_id, args.print_prompt, args.force),
         "tailor-next": lambda: tailor_next(args.print_prompt, args.force),
         "tailor-all": lambda: tailor_all(args.force),
