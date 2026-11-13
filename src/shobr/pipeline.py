@@ -2,6 +2,7 @@
 
 import sys
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
@@ -48,7 +49,18 @@ from .tracking import (
     review_next,
     review_posting_id,
 )
-from .views import build_posting_view
+from .views import (
+    DiscoveryStatus,
+    EnrichmentStatus,
+    ScoreRow,
+    ScreeningStatus,
+    StaleCount,
+    StatusView,
+    TailoringStatus,
+    TrackingStatus,
+    ValidityCount,
+    build_posting_view,
+)
 
 
 def _load_stores() -> tuple[
@@ -171,8 +183,8 @@ def stale_pending_rows() -> list[EnrichedRow]:
     return stale
 
 
-def print_status() -> None:
-    """Print the pipeline status overview, sectioned per stage."""
+def _status_view() -> StatusView:
+    """Build the semantic pipeline status overview."""
     leads, enriched, screened, tailored, tracked = _load_stores()
 
     enriched_ids = {row["posting_id"] for row in enriched}
@@ -200,13 +212,9 @@ def print_status() -> None:
             ai_scores[int(sr["ai"]["score"])] += 1
         if sr["human"] is not None:
             human_scores[int(sr["human"]["score"])] += 1
-    left_header, right_header = "LLM Scores:", "Human Scores:"
-    left_rows = [f"{score}: {ai_scores[score]}" for score in scores_desc]
-    right_rows = []
     pending_ids = tailored_ids if tailoring_supported else tracked_ids
-    verb = "to tailor" if tailoring_supported else "to track"
+    score_rows: list[ScoreRow] = []
     for score in scores_desc:
-        text = f"{score}: {human_scores[score]}"
         pending = sum(
             1
             for sr in screened.values()
@@ -216,14 +224,14 @@ def print_status() -> None:
             and sr["posting_id"] not in pending_ids
             and sr["posting_id"] in passing
         )
-        if pending:
-            text += f" ({pending} {verb})"
-        right_rows.append(text)
-    column = max(len(left_header), *(len(row) for row in left_rows)) + 4
-    histogram = [f"  - {left_header.ljust(column)}{right_header}"]
-    for score, left, right in zip(scores_desc, left_rows, right_rows):
-        line = f"    {left.ljust(column)}{right}"
-        histogram.append(line.replace(f"{score}:", f"{SCORE_COLORS[score]}{score}{RESET}:"))
+        score_rows.append(
+            ScoreRow(
+                score=int(score),
+                llm=ai_scores[score],
+                human=human_scores[score],
+                pending_action=pending,
+            )
+        )
 
     counts = {status: 0 for status in TrackStatus}
     for row in tracked.values():
@@ -237,125 +245,282 @@ def print_status() -> None:
         threshold = current_config()["stale_after_days"]
         stale = {row["posting_id"] for row in enriched if is_stale(row, threshold)}
 
-    def _stale_suffix(pids: Iterable[str]) -> str:
-        n = sum(1 for pid in pids if pid in stale)
-        return f" ({n} stale)" if n else ""
-
-    stale_note = {
-        "Pending Screening:": _stale_suffix(
-            row["posting_id"]
-            for row in enriched
-            if row["actionable"] and row["posting_id"] not in human_reviewed
-        ),
-        "Pending Human Review:": _stale_suffix(
-            sr["posting_id"]
-            for sr in screened.values()
-            if sr["decision"] == ReviewDecision.PENDING and sr["posting_id"] in passing
-        ),
-        "Pending Review:": _stale_suffix(pending_review_set),
-    }
-    if tailoring_supported:
-        stale_note["Pending Tailoring:"] = _stale_suffix(
-            sr["posting_id"]
-            for sr in screened.values()
-            if sr["decision"] == ReviewDecision.PURSUE
-            and sr["posting_id"] not in tailored_ids
-            and sr["posting_id"] in passing
+    def _validity_count(count: int, pids: Iterable[str]) -> ValidityCount:
+        """Count closed and filtered postings among `pids`."""
+        ids = list(pids)
+        return ValidityCount(
+            count=count,
+            closed=sum(1 for pid in ids if pid in closed),
+            filtered=sum(1 for pid in ids if pid in filtered),
         )
 
-    def _breakdown(pids: Iterable[str]) -> str:
-        parts = []
-        if closed_count := sum(1 for pid in pids if pid in closed):
-            parts.append(f"{closed_count} closed")
-        if filtered_count := sum(1 for pid in pids if pid in filtered):
-            parts.append(f"{filtered_count} filtered")
-        return f" ({', '.join(parts)})" if parts else ""
+    def _stale_count(count: int, pids: Iterable[str]) -> StaleCount:
+        """Count stale postings among `pids`."""
+        return StaleCount(count=count, stale=sum(1 for pid in pids if pid in stale))
 
-    validity_note = {
-        "Total Screened:": _breakdown(_ids(screened)),
-        "Packages Built:": _breakdown(_ids(tailored)),
-        **{
-            f"{status.value.capitalize()}:": _breakdown(
-                row["posting_id"] for row in tracked.values() if row["status"] == status
+    discovery = DiscoveryStatus(
+        total=len(leads),
+        rejected=sum(1 for row in leads if not row["actionable"]),
+        pending_enrichment=_pending_enrichment(leads, enriched_ids),
+    )
+    enrichment = EnrichmentStatus(
+        total=len(enriched),
+        rejected=sum(1 for row in enriched if not row["actionable"]),
+        pending_screening=_stale_count(
+            _pending_screening(enriched, screened),
+            (
+                row["posting_id"]
+                for row in enriched
+                if row["actionable"] and row["posting_id"] not in human_reviewed
+            ),
+        ),
+    )
+    screening = ScreeningStatus(
+        total=_validity_count(len(screened), _ids(screened)),
+        skipped=skip,
+        lacking_llm_review=lacking_llm,
+        pending_human_review=_stale_count(
+            pending_human,
+            (
+                sr["posting_id"]
+                for sr in screened.values()
+                if sr["decision"] == ReviewDecision.PENDING and sr["posting_id"] in passing
+            ),
+        ),
+        pending_tailoring=(
+            _stale_count(
+                _pending_tailoring(screened, tailored, enriched),
+                (
+                    sr["posting_id"]
+                    for sr in screened.values()
+                    if sr["decision"] == ReviewDecision.PURSUE
+                    and sr["posting_id"] not in tailored_ids
+                    and sr["posting_id"] in passing
+                ),
             )
-            for status in TrackStatus
-        },
-    }
-
-    screening_rows = [
-        ("Total Screened:", len(screened), BLUE),
-        ("Skipped:", skip, RED),
-        ("Lacking LLM Review:", lacking_llm, YELLOW),
-        ("Pending Human Review:", pending_human, YELLOW),
-    ]
-    if tailoring_supported:
-        screening_rows.append(
-            ("Pending Tailoring:", _pending_tailoring(screened, tailored, enriched), GREEN)
+            if tailoring_supported
+            else None
+        ),
+        pending_review=(
+            None
+            if tailoring_supported
+            else _stale_count(len(pending_review_set), pending_review_set)
+        ),
+        scores=score_rows,
+    )
+    tailoring = (
+        TailoringStatus(
+            packages_built=_validity_count(len(tailored), _ids(tailored)),
+            pending_review=_stale_count(len(pending_review_set), pending_review_set),
         )
-    else:
-        screening_rows.append(("Pending Review:", len(pending_review_set), GREEN))
-    review_rows = []
-    if tailoring_supported:
-        review_rows = [
-            ("Packages Built:", len(tailored), BLUE),
-            ("Pending Review:", len(pending_review_set), GREEN),
-        ]
+        if tailoring_supported
+        else None
+    )
+    tracking = TrackingStatus(
+        applied=counts[TrackStatus.APPLIED],
+        interviewing=counts[TrackStatus.INTERVIEWING],
+        offer=counts[TrackStatus.OFFER],
+        rejected=counts[TrackStatus.REJECTED],
+        ghosted=counts[TrackStatus.GHOSTED],
+        withdrawn=counts[TrackStatus.WITHDRAWN],
+    )
+    return StatusView(
+        discovery=discovery,
+        enrichment=enrichment,
+        screening=screening,
+        tailoring=tailoring,
+        tracking=tracking,
+    )
 
-    sections: list[tuple[str, list[tuple[str, int, str]]]] = [
-        (
+
+@dataclass(frozen=True)
+class _StatusRow:
+    """One labeled count in the text status overview."""
+
+    label: str
+    count: int
+    closed: int | None = None
+    filtered: int | None = None
+    stale: int | None = None
+
+
+@dataclass(frozen=True)
+class _StatusSection:
+    """A named group of status rows for the text overview."""
+
+    name: str
+    rows: list[_StatusRow]
+
+
+def _status_sections(view: StatusView) -> list[_StatusSection]:
+    """Map the semantic status view to labeled display sections."""
+    discovery = view.discovery
+    enrichment = view.enrichment
+    screening = view.screening
+    screening_rows = [
+        _StatusRow(
+            "Total Screened:",
+            screening.total.count,
+            closed=screening.total.closed,
+            filtered=screening.total.filtered,
+        ),
+        _StatusRow("Skipped:", screening.skipped),
+        _StatusRow("Lacking LLM Review:", screening.lacking_llm_review),
+        _StatusRow(
+            "Pending Human Review:",
+            screening.pending_human_review.count,
+            stale=screening.pending_human_review.stale,
+        ),
+    ]
+    if screening.pending_tailoring is not None:
+        screening_rows.append(
+            _StatusRow(
+                "Pending Tailoring:",
+                screening.pending_tailoring.count,
+                stale=screening.pending_tailoring.stale,
+            )
+        )
+    if screening.pending_review is not None:
+        screening_rows.append(
+            _StatusRow(
+                "Pending Review:",
+                screening.pending_review.count,
+                stale=screening.pending_review.stale,
+            )
+        )
+    sections = [
+        _StatusSection(
             "DISCOVERY",
             [
-                ("Total Leads Found:", len(leads), BLUE),
-                (
-                    "Rejected by Filter:",
-                    sum(1 for row in leads if not row["actionable"]),
-                    RED,
-                ),
-                ("Pending Enrichment:", _pending_enrichment(leads, enriched_ids), GREEN),
+                _StatusRow("Total Leads Found:", discovery.total),
+                _StatusRow("Rejected by Filter:", discovery.rejected),
+                _StatusRow("Pending Enrichment:", discovery.pending_enrichment),
             ],
         ),
-        (
+        _StatusSection(
             "ENRICHMENT",
             [
-                ("Total Enriched:", len(enriched), BLUE),
-                (
-                    "Rejected by Filter:",
-                    sum(1 for row in enriched if not row["actionable"]),
-                    RED,
+                _StatusRow("Total Enriched:", enrichment.total),
+                _StatusRow("Rejected by Filter:", enrichment.rejected),
+                _StatusRow(
+                    "Pending Screening:",
+                    enrichment.pending_screening.count,
+                    stale=enrichment.pending_screening.stale,
                 ),
-                ("Pending Screening:", _pending_screening(enriched, screened), GREEN),
             ],
         ),
-        (
-            "SCREENING",
-            screening_rows,
-        ),
+        _StatusSection("SCREENING", screening_rows),
     ]
-    if tailoring_supported:
-        sections.append(("TAILORING", review_rows))
+    if view.tailoring is not None:
+        sections.append(
+            _StatusSection(
+                "TAILORING",
+                [
+                    _StatusRow(
+                        "Packages Built:",
+                        view.tailoring.packages_built.count,
+                        closed=view.tailoring.packages_built.closed,
+                        filtered=view.tailoring.packages_built.filtered,
+                    ),
+                    _StatusRow(
+                        "Pending Review:",
+                        view.tailoring.pending_review.count,
+                        stale=view.tailoring.pending_review.stale,
+                    ),
+                ],
+            )
+        )
+    tracking = view.tracking
     sections.append(
-        (
+        _StatusSection(
             "TRACKING",
             [
-                (
-                    f"{status.value.capitalize()}:",
-                    counts[status],
-                    TRACK_STATUS_COLORS[status],
-                )
-                for status in TrackStatus
+                _StatusRow("Applied:", tracking.applied),
+                _StatusRow("Interviewing:", tracking.interviewing),
+                _StatusRow("Offer:", tracking.offer),
+                _StatusRow("Rejected:", tracking.rejected),
+                _StatusRow("Ghosted:", tracking.ghosted),
+                _StatusRow("Withdrawn:", tracking.withdrawn),
             ],
         )
     )
-    width = max(len(label) for _, rows in sections for label, _, _ in rows)
+    return sections
+
+
+def _status_suffix(row: _StatusRow) -> str:
+    """The parenthesized validity and staleness notes for a status row."""
+    parts = []
+    if row.closed:
+        parts.append(f"{row.closed} closed")
+    if row.filtered:
+        parts.append(f"{row.filtered} filtered")
+    validity = f" ({', '.join(parts)})" if parts else ""
+    stale = f" ({row.stale} stale)" if row.stale else ""
+    return validity + stale
+
+
+def _status_color(section: str, label: str) -> str:
+    """The ANSI color for one status row."""
+    if section in ("DISCOVERY", "ENRICHMENT"):
+        if label in ("Total Leads Found:", "Total Enriched:"):
+            return BLUE
+        if label == "Rejected by Filter:":
+            return RED
+        return GREEN
+    if section == "SCREENING":
+        if label == "Total Screened:":
+            return BLUE
+        if label == "Skipped:":
+            return RED
+        if label in ("Lacking LLM Review:", "Pending Human Review:"):
+            return YELLOW
+        return GREEN
+    if section == "TAILORING":
+        if label == "Packages Built:":
+            return BLUE
+        return GREEN
+    return TRACK_STATUS_COLORS[TrackStatus(label.removesuffix(":").lower())]
+
+
+def _score_histogram(view: StatusView, pending_action: str) -> list[str]:
+    """The LLM and human score histogram lines for the status output."""
+    left_header, right_header = "LLM Scores:", "Human Scores:"
+    left_rows = [f"{row.score}: {row.llm}" for row in view.screening.scores]
+    right_rows = []
+    for row in view.screening.scores:
+        text = f"{row.score}: {row.human}"
+        if row.pending_action:
+            text += f" ({row.pending_action} to {pending_action})"
+        right_rows.append(text)
+    column = max(len(left_header), *(len(row) for row in left_rows)) + 4
+    histogram = [f"  - {left_header.ljust(column)}{right_header}"]
+    for row, left, right in zip(view.screening.scores, left_rows, right_rows):
+        line = f"    {left.ljust(column)}{right}"
+        histogram.append(
+            line.replace(f"{row.score}:", f"{SCORE_COLORS[row.score]}{row.score}{RESET}:")
+        )
+    return histogram
+
+
+def print_status(*, json_output: bool = False) -> None:
+    """Print the pipeline status overview, sectioned per stage."""
+    view = _status_view()
+    if json_output:
+        emit_json(view)
+        return
+    sections = _status_sections(view)
+    width = max(len(row.label) for section in sections for row in section.rows)
+    pending_action = "tailor" if current_provider().supports_tailoring else "track"
     print("SHOBR STATUS")
     print()
-    for name, rows in sections:
-        print(f"{BOLD}- {name}{RESET}")
-        for label, count, color in rows:
-            suffix = validity_note.get(label, "") + stale_note.get(label, "")
-            print(f"  - {label:<{width}}  {color}{count}{RESET}{suffix}")
-            if name == "SCREENING" and label == "Pending Human Review:":
-                for line in histogram:
+    for section in sections:
+        print(f"{BOLD}- {section.name}{RESET}")
+        for row in section.rows:
+            suffix = _status_suffix(row)
+            color = _status_color(section.name, row.label)
+            print(f"  - {row.label:<{width}}  {color}{row.count}{RESET}{suffix}")
+            if section.name == "SCREENING" and row.label == "Pending Human Review:":
+                for line in _score_histogram(view, pending_action):
                     print(line)
         print()
 
@@ -383,9 +548,9 @@ def show_posting(posting_id: str, *, json_output: bool = False) -> None:
     if view.enrichment is None:
         assert view.lead is not None
         with paged():
-            print_lead(view.lead)
+            print_lead(view)
         return
-    print_review(view.enrichment, view.package, lead=view.lead, show_stage=True)
+    print_review(view, show_stage=True)
 
 
 def _confirm(prompt: str) -> bool:

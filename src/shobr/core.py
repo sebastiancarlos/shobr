@@ -242,36 +242,12 @@ def stage_position(
     return StagePosition(stage=stage, detail=detail)
 
 
-def stage_line(provider: str, posting_id: str, after: DataKind) -> str:
-    """Produce a `- Stage: ...` line for CLI output, naming the furthest stage
-    reached, and some information about it.
-
-    Always returns a line: the current stage plain, any later stage in
-    blue. The verdict detail (decision/status) is included unless it
-    belongs to the caller's own stage, which already shows it.
-    Furthest wins: tracking > tailoring > screening > enrichment. Reads the
-    sibling projections, each guarded by file existence. Imports are
-    local: stage modules import this package.
-    """
-    from .enrichment import project_enrichment
-    from .screening import project_screening
-    from .tailoring import project_tailoring
-    from .tracking import project_tracking
-
-    key = store_key(provider, posting_id)
-    screening_row = project_screening()["rows"].get(key)
-    tracking_row = project_tracking()["rows"].get(key)
-    position = stage_position(
-        after,
-        enriched=key in project_enrichment()["rows"],
-        screening_decision=str(screening_row["decision"]) if screening_row is not None else None,
-        tailored=key in project_tailoring()["rows"],
-        tracking_status=str(tracking_row["status"]) if tracking_row is not None else None,
-    )
-    detail = f" ({position.detail})" if position.detail is not None else ""
-    if _STAGE_RANK[position.stage] > _STAGE_RANK[after]:
-        return f"  - Stage: {BLUE}{position.stage.value}{RESET}{detail}"
-    return f"  - Stage: {position.stage.value}{detail}"
+def stage_line(stage: DataKind, detail: str | None, after: DataKind) -> str:
+    """Format a precomputed stage and detail as a `- Stage:` line."""
+    suffix = f" ({detail})" if detail is not None else ""
+    if _STAGE_RANK[stage] > _STAGE_RANK[after]:
+        return f"  - Stage: {BLUE}{stage.value}{RESET}{suffix}"
+    return f"  - Stage: {stage.value}{suffix}"
 
 
 def applications_by_company(companies: dict[str, str]) -> dict[str, dict[str, str]]:
@@ -362,10 +338,9 @@ def same_company_application(
 
 
 def same_company_line(
-    company: str, provider: str, posting_id: str, *, plain: bool = False
+    application: SameCompanyApplication | None, *, plain: bool = False
 ) -> str | None:
-    """Generate 'Last Applied To Same Company' line for another posting's row."""
-    application = same_company_application(company, provider, posting_id)
+    """Format a precomputed same-company application line."""
     if application is None:
         return None
     if plain:

@@ -128,7 +128,7 @@ SHOBR breaks the job search process into _5 pipeline stages_.
 
 You can run:
 
-- **`shobr status`**
+- **`shobr status [--json]`**
   - See details about every pipeline stage.
 - **`shobr next`**
   - Have SHOBR automatically prompt you for the next logical action across the
@@ -184,7 +184,7 @@ $ shobr status
 Scrapes the LinkedIn job search results based on your `config.toml` keywords
 and locations, running them through a basic regex pre-filter.
 
-- **`shobr discovered`**
+- **`shobr discovered [--json]`**
   - Prints the stored leads summary without fetching.
 - **`shobr discover`**
   - Triggers `beachpatrol` to search and scrape leads.
@@ -196,7 +196,7 @@ and locations, running them through a basic regex pre-filter.
 Visits individual job pages to extract full descriptions, salary ranges, and
 Easy Apply links. Done one at a time to pace requests and avoid rate-limits.
 
-- **`shobr enriched`**
+- **`shobr enriched [--json]`**
   - Prints all enriched jobs.
 - **`shobr enrich-next`**
   - Fetches the detail page for the oldest non-enriched lead.
@@ -219,6 +219,9 @@ Scores enriched jobs against your personal Markdown profile and deal-breakers.
 - **`shobr screen-next`**
   - Records your own verdict for the next lead (score 1-5 plus reason),
     via `$EDITOR` or `--score`/`--reason`.
+- **`shobr screened [--json]`**
+  - Prints the screening store with review provenance. `--score` filters by
+    score.
 
 ### 4. Tailoring
 
@@ -245,7 +248,7 @@ Local Kanban-style tracking for your applications.
 - **`shobr track <posting_id> <status> [--note TEXT]`**
   - Updates pipeline status (`applied`, `interviewing`, `offer`, `rejected`,
     etc.).
-- **`shobr tracked`**
+- **`shobr tracked [--json]`**
   - Prints a high-level overview of your entire funnel.
 
 ## Configuration

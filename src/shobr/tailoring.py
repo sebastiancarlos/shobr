@@ -24,6 +24,7 @@ from .core import (
     require_events,
     retry_llm_task,
     row_header,
+    same_company_line,
     shobr_command,
     short_path,
     stage_line,
@@ -181,17 +182,14 @@ def _print_tailored_list_view(view: ListView) -> None:
         print(f"  - {BOLD}Application dir:{RESET} {short_path(package['app_dir'])}")
         rewrites = package["rewrites"]
         print(f"  - Rewrites: {GREEN if rewrites == 0 else YELLOW}{rewrites}{RESET}")
-        print(stage_line(package["provider"], package["posting_id"], DataKind.TAILORING))
+        print(stage_line(posting.stage, posting.stage_detail, DataKind.TAILORING))
         checked = datetime.fromisoformat(enriched["enriched_last_at"]).date().isoformat()
-        threshold = current_config()["stale_after_days"]
-        print(f"  - Last Enriched At: {checked}{staleness_tag(enriched, threshold)}")
+        assert posting.stale is not None, "tailored view has no staleness"
+        print(f"  - Last Enriched At: {checked}{staleness_tag(posting.stale)}")
         built = datetime.fromisoformat(package["tailored_at"]).date().isoformat()
         print(f"  - Tailored At: {built}")
-        if application := posting.same_company_application:
-            print(
-                f"  - {YELLOW}Last Applied To Same Company:{RESET} "
-                f"{application.date} ({application.posting_id})"
-            )
+        if line := same_company_line(posting.same_company_application):
+            print(line)
 
     print()
 

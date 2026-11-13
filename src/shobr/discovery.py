@@ -23,6 +23,7 @@ from .core import (
     reasons_line,
     rejected_tag,
     require_events,
+    same_company_application,
     same_company_line,
     shobr_command,
     short_path,
@@ -30,6 +31,7 @@ from .core import (
     store_key,
     store_path,
 )
+from .output import emit_json
 from .providers.base import (
     current_config,
     current_provider,
@@ -38,6 +40,7 @@ from .providers.base import (
 
 if TYPE_CHECKING:
     from .enrichment import JobDetailPayload
+    from .views import ListView, PostingView
 
 
 class JobRow(TypedDict):
@@ -216,8 +219,10 @@ def project_discovery(provider: str | None = None) -> DiscoveredStore:
     return {"fetched_at": events[-1]["fetched_at"], "rows": rows}
 
 
-def print_lead(row: StoredJob, *, stage: bool = True, suffix: str = "") -> None:
+def print_lead(view: PostingView, *, stage: bool = True, suffix: str = "") -> None:
     """Print one stored lead with its discovery metadata."""
+    row = view.lead
+    assert row is not None, "lead view has no lead"
     tag = suffix
     if not row["actionable"]:
         assert row["rejected_reason"] is not None
@@ -229,38 +234,46 @@ def print_lead(row: StoredJob, *, stage: bool = True, suffix: str = "") -> None:
     print(f"  - {row['posting_url']}")
     seen = datetime.fromisoformat(row["first_seen_at"]).date().isoformat()
     print(f"  - First Discovered At: {seen}")
-    if line := same_company_line(row["company"], row["provider"], row["posting_id"]):
+    if line := same_company_line(view.same_company_application):
         print(line)
     if stage:
-        print(stage_line(row["provider"], row["posting_id"], DataKind.DISCOVERY))
+        print(stage_line(view.stage, view.stage_detail, DataKind.DISCOVERY))
 
 
-def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None = None) -> None:
-    """Print the projected leads store. First seen in `mark_new_from` get `(NEW)`."""
+def _print_discovery_summary(view: ListView, mark_new_from: str | None = None) -> None:
+    """Print the projected leads view. First seen in `mark_new_from` get `(NEW)`."""
     with paged():
-        rejected_count = sum(1 for row in leads["rows"] if not row["actionable"])
         if mark_new_from:
-            new_count = sum(1 for row in leads["rows"] if row["first_seen_at"] == mark_new_from)
+            new_count = sum(
+                1
+                for posting in view.postings
+                if posting.lead is not None and posting.lead["first_seen_at"] == mark_new_from
+            )
             print(
-                f"{BOLD}All stored jobs:{RESET} {len(leads['rows'])} jobs "
-                f"({RED}{rejected_count}{RESET} rejected. {GREEN}{new_count}{RESET} newly seen)"
+                f"{BOLD}All stored jobs:{RESET} {view.summary['leads']} jobs "
+                f"({RED}{view.summary['rejected']}{RESET} rejected. "
+                f"{GREEN}{new_count}{RESET} newly seen)"
             )
         else:
             print(
-                f"{BOLD}All stored jobs:{RESET} {len(leads['rows'])} jobs "
-                f"({RED}{rejected_count}{RESET} rejected)"
+                f"{BOLD}All stored jobs:{RESET} {view.summary['leads']} jobs "
+                f"({RED}{view.summary['rejected']}{RESET} rejected)"
             )
         print()
-        for row in leads["rows"]:
+        for posting in view.postings:
+            lead = posting.lead
+            assert lead is not None, "discovery view has no lead"
             new_tag = (
                 f" {GREEN}(NEW){RESET}"
-                if mark_new_from and row["first_seen_at"] == mark_new_from
+                if mark_new_from and lead["first_seen_at"] == mark_new_from
                 else ""
             )
-            print_lead(row, suffix=new_tag)
+            print_lead(posting, suffix=new_tag)
 
         reasons = Counter(
-            row["rejected_reason"] for row in leads["rows"] if row["rejected_reason"] is not None
+            posting.lead["rejected_reason"]
+            for posting in view.postings
+            if posting.lead is not None and posting.lead["rejected_reason"] is not None
         )
         if reasons:
             print()
@@ -271,11 +284,48 @@ def _print_discovery_summary(leads: DiscoveredStore, mark_new_from: str | None =
         print()
 
 
-def discover_local() -> None:
+def _discovery_list_view(leads: DiscoveredStore) -> ListView:
+    """Build the stored leads as a typed list view."""
+    from .enrichment import project_enrichment
+    from .screening import project_screening
+    from .tailoring import project_tailoring
+    from .tracking import project_tracking
+    from .views import ListView, build_posting_view
+
+    provider = current_provider().name
+    enriched = project_enrichment(provider)["rows"]
+    screened = project_screening(provider)["rows"]
+    tailored = project_tailoring(provider)["rows"]
+    tracked = project_tracking(provider)["rows"]
+    postings = []
+    for row in leads["rows"]:
+        key = store_key(provider, row["posting_id"])
+        postings.append(
+            build_posting_view(
+                row["posting_id"],
+                after=DataKind.DISCOVERY,
+                lead=row,
+                enrichment=enriched.get(key),
+                screening=screened.get(key),
+                package=tailored.get(key),
+                tracking=tracked.get(key),
+            )
+        )
+    rejected = sum(1 for row in leads["rows"] if not row["actionable"])
+    return ListView(
+        summary={"leads": len(postings), "rejected": rejected},
+        postings=postings,
+    )
+
+
+def discover_local(*, json_output: bool = False) -> None:
     """Print the stored job leads summary without fetching."""
     require_events(DataKind.DISCOVERY)
-    leads = project_discovery(current_provider().name)
-    _print_discovery_summary(leads)
+    view = _discovery_list_view(project_discovery(current_provider().name))
+    if json_output:
+        emit_json(view)
+        return
+    _print_discovery_summary(view)
 
 
 def _print_search_params(filters: Config) -> None:
@@ -330,7 +380,7 @@ def discover() -> None:
 
     # report this provider's rows, tagging ones first seen on this pass.
     _print_discovery_summary(
-        {"fetched_at": leads["fetched_at"], "rows": rowset},
+        _discovery_list_view({"fetched_at": leads["fetched_at"], "rows": rowset}),
         mark_new_from=leads["fetched_at"],
     )
     print(f"wrote to {short_path(store_path(DataKind.DISCOVERY))}")
@@ -338,7 +388,12 @@ def discover() -> None:
 
 def discover_posting_id(target: str) -> None:
     """Fetch one posting by id or URL and record it as a manual lead + enrichment."""
-    from .enrichment import build_enrichment_event, print_enriched_row, project_enrichment
+    from .enrichment import (
+        build_enrichment_event,
+        is_stale,
+        print_enriched_row,
+        project_enrichment,
+    )
 
     provider = current_provider()
     posting_id = provider.extract_posting_id(target)
@@ -386,7 +441,12 @@ def discover_posting_id(target: str) -> None:
     persist_event(DataKind.DISCOVERY, discovery_event, project_discovery)
     enriched = persist_event(DataKind.ENRICHMENT, enrichment_event, project_enrichment)
 
-    print_enriched_row(enriched["rows"][store_key(provider.name, posting_id)])
+    enriched_row = enriched["rows"][store_key(provider.name, posting_id)]
+    stale = is_stale(enriched_row, current_config()["stale_after_days"])
+    same_company = same_company_application(
+        enriched_row["company"], enriched_row["provider"], enriched_row["posting_id"]
+    )
+    print_enriched_row(enriched_row, stale=stale, same_company=same_company)
     print()
     print(f"wrote to {short_path(store_path(DataKind.DISCOVERY))}")
     print(f"wrote to {short_path(store_path(DataKind.ENRICHMENT))}")

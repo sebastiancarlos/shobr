@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
 from .core import (
@@ -32,6 +32,7 @@ from .enrichment import (
     validity_tag,
     warn_if_stale,
 )
+from .output import emit_json
 from .providers.base import current_config, current_provider
 from .screening import (
     ReviewDecision,
@@ -40,6 +41,9 @@ from .screening import (
     project_screening,
 )
 from .tailoring import TailoringRow, project_tailoring
+
+if TYPE_CHECKING:
+    from .views import ListView, PostingView
 
 
 class TrackStatus(StrEnum):
@@ -189,50 +193,88 @@ def track_posting_id(posting_id: str, status: str, note: str | None) -> None:
     _record_transition(enriched, package, track_status, note)
 
 
-def print_tracked() -> None:
-    """Print the tracking store summary."""
-    with paged():
-        require_events(DataKind.TRACKING)
-        tracked = project_tracking(current_provider().name)
+def _tracked_list_view(tracked: TrackedStore) -> ListView:
+    """Build the tracking store as a typed list view."""
+    from .discovery import project_discovery
+    from .views import ListView, build_posting_view
 
-        counts = {status: 0 for status in TrackStatus}
-        for row in tracked["rows"].values():
-            counts[row["status"]] += 1
-        breakdown = ", ".join(
-            f"{counts[status]} {status.value}" for status in TrackStatus if counts[status]
+    provider = current_provider().name
+    leads = {row["posting_id"]: row for row in project_discovery(provider)["rows"]}
+    enriched = project_enrichment(provider)["rows"]
+    screened = project_screening(provider)["rows"]
+    tailored = project_tailoring(provider)["rows"]
+    rows = list(tracked["rows"].values())
+    postings = [
+        build_posting_view(
+            row["posting_id"],
+            after=DataKind.TRACKING,
+            lead=leads.get(row["posting_id"]),
+            enrichment=enriched[store_key(row["provider"], row["posting_id"])],
+            screening=screened.get(store_key(row["provider"], row["posting_id"])),
+            package=tailored.get(store_key(row["provider"], row["posting_id"])),
+            tracking=row,
         )
-        print(f"{len(tracked['rows'])} tracked ({breakdown})")
+        for row in rows
+    ]
+    counts = {status: 0 for status in TrackStatus}
+    for row in rows:
+        counts[row["status"]] += 1
+    return ListView(
+        summary={
+            "tracked": len(rows),
+            "by_status": {status.value: counts[status] for status in TrackStatus},
+        },
+        postings=postings,
+    )
+
+
+def print_tracked(*, json_output: bool = False) -> None:
+    """Print the tracking store summary."""
+    require_events(DataKind.TRACKING)
+    view = _tracked_list_view(project_tracking(current_provider().name))
+    if json_output:
+        emit_json(view)
+        return
+    with paged():
+        by_status = cast("dict[str, int]", view.summary["by_status"])
+        breakdown = ", ".join(
+            f"{by_status[status.value]} {status.value}"
+            for status in TrackStatus
+            if by_status[status.value]
+        )
+        print(f"{view.summary['tracked']} tracked ({breakdown})")
         print()
-        assert event_log(DataKind.ENRICHMENT).exists(), "tracking data implies enrichment data"
-        enriched = project_enrichment(current_provider().name)
-        for row in tracked["rows"].values():
-            eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
+        for posting in view.postings:
+            eref = posting.enrichment
+            row = posting.tracking
+            assert eref is not None, "tracking view has no enrichment"
+            assert row is not None, "tracking view has no tracking"
             print(f"{BOLD}{row_header(eref)}{RESET}{validity_tag(eref)}")
             print(f"  - {eref['title']}")
             color = TRACK_STATUS_COLORS[row["status"]]
             print(f"  - Status: {color}{str(row['status']).upper()}{RESET}")
             print(f"  - Tracked At: {datetime.fromisoformat(row['tracked_at']).date().isoformat()}")
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-            threshold = current_config()["stale_after_days"]
-            print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
+            assert posting.stale is not None, "tracking view has no staleness"
+            print(f"  - Last Enriched At: {checked}{staleness_tag(posting.stale)}")
             if row["note"]:
                 print(f"  - Note: {row['note']}")
 
         print()
 
 
-def print_review(
-    enriched: EnrichedRow,
-    package: TailoringRow | None,
-    *,
-    lead: Mapping[str, object] | None = None,
-    show_stage: bool = False,
-) -> None:
+def print_review(view: PostingView, *, show_stage: bool = False) -> None:
     """Print the full stored detail for one enriched posting (and above)."""
+    enriched = view.enrichment
+    package = view.package
+    lead = view.lead
+    assert enriched is not None, "review view has no enrichment"
+    assert view.stale is not None, "review view has no staleness"
     with paged():
+        threshold = current_config()["stale_after_days"]
         print(f"{row_header(enriched)}{validity_tag(enriched)}")
         if show_stage:
-            print(stage_line(enriched["provider"], enriched["posting_id"], DataKind.DISCOVERY))
+            print(stage_line(view.stage, view.stage_detail, DataKind.DISCOVERY))
         print(f"  - {enriched['title']}")
         if lead is not None:
             print(f"  - Posting URL: {lead['posting_url']}")
@@ -242,24 +284,19 @@ def print_review(
             if isinstance(method, Mapping):
                 print(f"  - Discovered Via: {method['type']}")
         checked = datetime.fromisoformat(enriched["enriched_last_at"]).date().isoformat()
-        threshold = current_config()["stale_after_days"]
-        print(f"  - Last Enriched At: {checked}{staleness_tag(enriched, threshold)}")
+        print(f"  - Last Enriched At: {checked}{staleness_tag(view.stale)}")
         if package is not None:
             built = datetime.fromisoformat(package["tailored_at"]).date().isoformat()
             print(f"  - Tailored At: {built}")
-        warn_if_stale(enriched, threshold)
+        warn_if_stale(enriched, threshold, stale=view.stale)
         if pills := pill_line(enriched):
             print(f"  - {pills}")
         print_apply_block(enriched)
-        if line := same_company_line(
-            enriched["company"], enriched["provider"], enriched["posting_id"]
-        ):
+        if line := same_company_line(view.same_company_application):
             print(line)
 
         # print screening info
-        sr = project_screening(current_provider().name)["rows"].get(
-            store_key(enriched["provider"], enriched["posting_id"])
-        )
+        sr = view.screening
         if sr is None:
             print("  - Screening: N/A")
         else:
@@ -267,9 +304,7 @@ def print_review(
             print_screening_status(sr, "    ")
 
         # print tracking info
-        tracked = project_tracking(current_provider().name)["rows"].get(
-            store_key(enriched["provider"], enriched["posting_id"])
-        )
+        tracked = view.tracking
         print("  - Tracking:")
         if tracked is None:
             print("    - Status: UNTRACKED")
@@ -297,8 +332,21 @@ def print_review(
 
 def review_posting_id(posting_id: str) -> None:
     """Print the full listing for a specific trackable posting."""
+    from .views import build_posting_view
+
     enriched, package = trackable_row(posting_id)
-    print_review(enriched, package)
+    provider = current_provider()
+    key = store_key(provider.name, posting_id)
+    view = build_posting_view(
+        posting_id,
+        after=DataKind.DISCOVERY,
+        lead=None,
+        enrichment=enriched,
+        screening=project_screening(provider.name)["rows"].get(key),
+        package=package,
+        tracking=project_tracking(provider.name)["rows"].get(key),
+    )
+    print_review(view)
 
 
 def review_next() -> None:
@@ -323,8 +371,20 @@ def review_next() -> None:
             and (sr := screened.get(key)) is not None
             and sr["decision"] == ReviewDecision.PURSUE
         ]
+    from .views import build_posting_view
+
     for row, package in candidates:
-        print_review(row, package)
+        key = store_key(row["provider"], row["posting_id"])
+        view = build_posting_view(
+            row["posting_id"],
+            after=DataKind.DISCOVERY,
+            lead=None,
+            enrichment=row,
+            screening=project_screening(provider.name)["rows"].get(key),
+            package=package,
+            tracking=tracked.get(key),
+        )
+        print_review(view)
         track_command = shobr_command(f"track {row['posting_id']} applied")
         print(f"If you applied, track it: {BLUE}{track_command}{RESET}")
         return

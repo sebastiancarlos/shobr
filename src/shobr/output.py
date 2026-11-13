@@ -9,6 +9,9 @@ from pathlib import Path
 
 def _json_default(value: object) -> object:
     """Serialize view objects that the standard JSON encoder cannot handle."""
+    to_json = getattr(value, "to_json", None)
+    if callable(to_json):
+        return to_json()
     if is_dataclass(value) and not isinstance(value, type):
         return asdict(value)
     if isinstance(value, Enum):

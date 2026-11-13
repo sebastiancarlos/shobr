@@ -7,7 +7,7 @@ import textwrap
 from datetime import UTC, datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from .ai import chat_completion, parse_json_object
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
@@ -33,6 +33,7 @@ from .core import (
     require_events,
     retry_llm_task,
     row_header,
+    same_company_application,
     same_company_line,
     shobr_command,
     short_path,
@@ -50,7 +51,11 @@ from .enrichment import (
     staleness_tag,
     validity_tag,
 )
+from .output import emit_json
 from .providers.base import current_config, current_provider
+
+if TYPE_CHECKING:
+    from .views import ListView
 
 _PROFILE_TEMPLATE_SENTINEL = "SHOBR PROFILE TEMPLATE"
 
@@ -235,9 +240,6 @@ class Score(IntEnum):
 # A human score at or above this means "pursue"
 _HUMAN_PURSUE_MIN = Score.TWO
 
-# Note: This is DEAD CODE for now, but might be wired-in later on.
-_AUTO_PURSUE_AI_MIN: int | None = None
-
 
 class _ScreeningReview(TypedDict):
     """A screening review."""
@@ -419,69 +421,114 @@ def _effective_score(row: ScreeningRow) -> int | None:
     return None
 
 
-def print_screened(score_filter: str | None = None) -> None:
+def _screened_list_view(
+    rows: list[ScreeningRow],
+    enriched: dict[str, EnrichedRow],
+) -> ListView:
+    """Build the filtered screening store as a typed list view."""
+    from .discovery import project_discovery
+    from .tailoring import project_tailoring
+    from .tracking import project_tracking
+    from .views import ListView, build_posting_view
+
+    provider = current_provider().name
+    leads = {row["posting_id"]: row for row in project_discovery(provider)["rows"]}
+    tailored = project_tailoring(provider)["rows"]
+    tracked = project_tracking(provider)["rows"]
+    passing = {row["posting_id"] for row in enriched.values() if row["actionable"]}
+    pursue = sum(1 for row in rows if row["decision"] == ReviewDecision.PURSUE)
+    skip = sum(1 for row in rows if row["decision"] == ReviewDecision.SKIP)
+    pending = sum(
+        1
+        for row in rows
+        if row["decision"] == ReviewDecision.PENDING and row["posting_id"] in passing
+    )
+    lacking = sum(
+        1
+        for row in rows
+        if row["human"] is None and row["ai"] is None and row["posting_id"] in passing
+    )
+    postings = []
+    for row in rows:
+        key = store_key(row["provider"], row["posting_id"])
+        postings.append(
+            build_posting_view(
+                row["posting_id"],
+                after=DataKind.SCREENING,
+                lead=leads.get(row["posting_id"]),
+                enrichment=enriched[key],
+                screening=row,
+                package=tailored.get(key),
+                tracking=tracked.get(key),
+            )
+        )
+    return ListView(
+        summary={
+            "screened": len(rows),
+            "pursue": pursue,
+            "skip": skip,
+            "lacking_llm_review": lacking,
+            "pending_human_review": pending,
+        },
+        postings=postings,
+    )
+
+
+def print_screened(score_filter: str | None = None, *, json_output: bool = False) -> None:
     """Print the screening store summary, optionally filtered by score."""
+    require_events(DataKind.SCREENING)
+    screened = project_screening(current_provider().name)
+
+    wanted = (
+        _parse_score_filter(score_filter)
+        if score_filter is not None and score_filter != "none"
+        else frozenset()
+    )
+
+    def keep(row: ScreeningRow) -> bool:
+        if score_filter is None:
+            return True
+        if score_filter == "none":
+            return row["human"] is None
+        return _effective_score(row) in wanted
+
+    rows = [row for row in screened["rows"].values() if keep(row)]
+    assert event_log(DataKind.ENRICHMENT).exists(), "screening data implies enrichment data"
+    enriched = project_enrichment(current_provider().name)
+    view = _screened_list_view(rows, enriched["rows"])
+    if json_output:
+        emit_json(view)
+        return
     with paged():
-        require_events(DataKind.SCREENING)
-        screened = project_screening(current_provider().name)
-
-        wanted = (
-            _parse_score_filter(score_filter)
-            if score_filter is not None and score_filter != "none"
-            else frozenset()
-        )
-
-        def keep(row: ScreeningRow) -> bool:
-            if score_filter is None:
-                return True
-            if score_filter == "none":
-                return row["human"] is None
-            return _effective_score(row) in wanted
-
-        rows = [row for row in screened["rows"].values() if keep(row)]
-        assert event_log(DataKind.ENRICHMENT).exists(), "screening data implies enrichment data"
-        passing = {
-            row["posting_id"]
-            for row in project_enrichment(current_provider().name)["rows"].values()
-            if row["actionable"]
-        }
-        pursue = sum(1 for row in rows if row["decision"] == ReviewDecision.PURSUE)
-        skip = sum(1 for row in rows if row["decision"] == ReviewDecision.SKIP)
-        pending = sum(
-            1
-            for row in rows
-            if row["decision"] == ReviewDecision.PENDING and row["posting_id"] in passing
-        )
-        lacking = sum(
-            1
-            for row in rows
-            if row["human"] is None and row["ai"] is None and row["posting_id"] in passing
-        )
         print(
-            f"{BLUE}{len(rows)}{RESET} screened ({GREEN}{pursue}{RESET} pursue, "
-            f"{RED}{skip}{RESET} skip, {YELLOW}{lacking}{RESET} lacking LLM review, "
-            f"{YELLOW}{pending}{RESET} pending human review)"
+            f"{BLUE}{view.summary['screened']}{RESET} screened "
+            f"({GREEN}{view.summary['pursue']}{RESET} pursue, "
+            f"{RED}{view.summary['skip']}{RESET} skip, "
+            f"{YELLOW}{view.summary['lacking_llm_review']}{RESET} lacking LLM review, "
+            f"{YELLOW}{view.summary['pending_human_review']}{RESET} pending human review)"
         )
         print()
-        enriched = project_enrichment(current_provider().name)
-        for row in rows:
-            eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
+        for posting in view.postings:
+            eref = posting.enrichment
+            row = posting.screening
+            assert eref is not None, "screening view has no enrichment"
+            assert row is not None, "screening view has no screening"
             print(f"{row_header(eref)}{validity_tag(eref)}")
             pills = pill_line(eref)
             print(f"  - {eref['title']}")
             if pills:
                 print(f"  - {pills}")
             print_screening_status(row, "  ")
-            print(stage_line(row["provider"], row["posting_id"], DataKind.SCREENING))
+            print(stage_line(posting.stage, posting.stage_detail, DataKind.SCREENING))
             checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-            threshold = current_config()["stale_after_days"]
-            print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
+            assert posting.stale is not None, "screening view has no staleness"
+            print(f"  - Last Enriched At: {checked}{staleness_tag(posting.stale)}")
             scored = [
                 review["scored_at"] for review in (row["human"], row["ai"]) if review is not None
             ]
             reviewed = datetime.fromisoformat(max(scored)).date().isoformat()
             print(f"  - Reviewed At: {reviewed}")
-            if line := same_company_line(eref["company"], eref["provider"], row["posting_id"]):
+            if line := same_company_line(posting.same_company_application):
                 print(line)
 
         print()
@@ -583,7 +630,11 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
     threshold = current_config()["stale_after_days"]
     company_line = (
-        same_company_line(row["company"], row["provider"], row["posting_id"], plain=True) or ""
+        same_company_line(
+            same_company_application(row["company"], row["provider"], row["posting_id"]),
+            plain=True,
+        )
+        or ""
     )
     heading = f"{row['company']} ({row['posting_id']})" if row["company"] else row["posting_id"]
     return render_template(
@@ -592,7 +643,7 @@ def _screening_template(row: EnrichedRow, ai: _AIReview | None = None) -> str:
         title=row["title"],
         pills_line=pills_line,
         checked=checked,
-        stale=staleness_tag(row, threshold),
+        stale=staleness_tag(is_stale(row, threshold)),
         apply_lines=apply_lines,
         company_line=company_line,
         ai_lines=ai_lines,
@@ -672,9 +723,15 @@ def _screen_row(
     """
     if (score is None) != (reason is None):
         raise ShobrError("give either both score and reason, or neither")
-    print_enriched_row(row, short=True)
+    threshold = current_config()["stale_after_days"]
+    print_enriched_row(
+        row,
+        stale=is_stale(row, threshold),
+        same_company=same_company_application(row["company"], row["provider"], row["posting_id"]),
+        short=True,
+    )
     _print_screening_line(row, screened)
-    refuse_if_stale(row, current_config()["stale_after_days"], force)
+    refuse_if_stale(row, threshold, force)
     if score is not None and reason is not None:
         _record_review(row, score, reason, _ReviewKind.HUMAN)
         return

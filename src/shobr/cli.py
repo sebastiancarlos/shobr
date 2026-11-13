@@ -121,7 +121,9 @@ def main() -> None:
         ("discovered", "print the stored job leads summary"),
         ("enriched", "print every enriched job detail stored so far"),
     ]:
-        _provider_arg(sub.add_parser(name, help=help_text))
+        command_parser = sub.add_parser(name, help=help_text)
+        _json_arg(command_parser)
+        _provider_arg(command_parser)
 
     discover_parser = sub.add_parser(
         "discover",
@@ -168,6 +170,7 @@ def main() -> None:
         "--score",
         help="filter by score: N, N-M, N,M,K, or 'none' (no human review yet)",
     )
+    _json_arg(screened_parser)
     _provider_arg(screened_parser)
 
     screen = sub.add_parser(
@@ -246,12 +249,12 @@ def main() -> None:
     )
     _provider_arg(_force_arg(tailor_all_parser))
 
-    _provider_arg(
-        sub.add_parser(
-            "tracked",
-            help="print the tracking store with per-status breakdown",
-        )
+    tracked_parser = sub.add_parser(
+        "tracked",
+        help="print the tracking store with per-status breakdown",
     )
+    _json_arg(tracked_parser)
+    _provider_arg(tracked_parser)
 
     track = sub.add_parser(
         "track",
@@ -281,11 +284,10 @@ def main() -> None:
     _json_arg(show_parser)
     _provider_arg(show_parser)
 
-    for name, help_text in [
-        ("review-next", "print the oldest untracked posting"),
-        ("status", "print the pipeline status overview"),
-    ]:
-        _provider_arg(sub.add_parser(name, help=help_text))
+    _provider_arg(sub.add_parser("review-next", help="print the oldest untracked posting"))
+    status_parser = sub.add_parser("status", help="print the pipeline status overview")
+    _json_arg(status_parser)
+    _provider_arg(status_parser)
 
     next_parser = sub.add_parser(
         "next",
@@ -322,13 +324,13 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         "smoke-test-browser": smoke_test_browser,
         "smoke-test-llm": smoke_test_completion,
         "notifications": lambda: notifications_local() if args.local else notifications(),
-        "discovered": discover_local,
+        "discovered": lambda: discover_local(json_output=args.json),
         "discover": lambda: discover_posting_id(args.posting_id) if args.posting_id else discover(),
-        "enriched": print_enriched,
+        "enriched": lambda: print_enriched(json_output=args.json),
         "enrich": lambda: enrich_posting_id(args.posting_id),
         "enrich-next": enrich_next,
         "enrich-all": lambda: enrich_all(args.delay),
-        "screened": lambda: print_screened(args.score),
+        "screened": lambda: print_screened(args.score, json_output=args.json),
         "screen": lambda: screen_posting_id(args.posting_id, args.score, args.reason, args.force),
         "screen-next": lambda: screen_next(args.score, args.reason, args.force),
         "screen-llm": lambda: screen_llm_posting_id(args.posting_id, args.print_prompt, args.force),
@@ -338,12 +340,12 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         "tailor": lambda: tailor_posting_id(args.posting_id, args.print_prompt, args.force),
         "tailor-next": lambda: tailor_next(args.print_prompt, args.force),
         "tailor-all": lambda: tailor_all(args.force),
-        "tracked": print_tracked,
+        "tracked": lambda: print_tracked(json_output=args.json),
         "track": lambda: track_posting_id(args.posting_id, args.status, args.note),
         "review": lambda: review_posting_id(args.posting_id),
         "show": lambda: show_posting(args.posting_id, json_output=args.json),
         "review-next": review_next,
-        "status": print_status,
+        "status": lambda: print_status(json_output=args.json),
         "next": lambda: next_posting_id(args.posting_id) if args.posting_id else run_next(),
     }
     match commands.get(args.command):

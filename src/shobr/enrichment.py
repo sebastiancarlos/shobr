@@ -7,7 +7,7 @@ import time
 from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from .browser import beachmsg_json, capture_parse_failure
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
@@ -16,6 +16,7 @@ from .core import (
     DataKind,
     EmploymentType,
     LocationType,
+    SameCompanyApplication,
     ShobrError,
     applications_by_company,
     cached_projection,
@@ -30,6 +31,7 @@ from .core import (
     rejected_tag,
     require_events,
     row_header,
+    same_company_application,
     same_company_line,
     shobr_command,
     short_path,
@@ -44,11 +46,15 @@ from .discovery import (
     base_reject_reason,
     project_discovery,
 )
+from .output import emit_json
 from .providers.base import (
     current_config,
     current_provider,
     get_provider,
 )
+
+if TYPE_CHECKING:
+    from .views import ListView
 
 DEFAULT_ENRICH_ALL_DELAY = 10.0
 
@@ -185,9 +191,11 @@ def is_stale(row: EnrichedRow, threshold_days: int) -> bool:
     return (datetime.now(UTC) - checked).days > threshold_days
 
 
-def warn_if_stale(row: EnrichedRow, threshold_days: int) -> None:
+def warn_if_stale(row: EnrichedRow, threshold_days: int, *, stale: bool | None = None) -> None:
     """Print the re-enrich nudge when the row's last check is stale."""
-    if is_stale(row, threshold_days):
+    if stale is None:
+        stale = is_stale(row, threshold_days)
+    if stale:
         enrich_command = shobr_command(f"enrich {row['posting_id']}")
         print(
             f"  - Stale: last checked over {threshold_days} days ago;"
@@ -208,9 +216,9 @@ def refuse_if_stale(row: EnrichedRow, threshold_days: int, force: bool) -> None:
     )
 
 
-def staleness_tag(row: EnrichedRow, threshold_days: int) -> str:
-    """A yellow (STALE) marker, or empty when freshly checked."""
-    return f" {YELLOW}(STALE){RESET}" if is_stale(row, threshold_days) else ""
+def staleness_tag(stale: bool) -> str:
+    """A yellow (STALE) marker for a precomputed staleness flag."""
+    return f" {YELLOW}(STALE){RESET}" if stale else ""
 
 
 def validity_tag(row: EnrichedRow) -> str:
@@ -332,11 +340,19 @@ def print_description_block(label: str, text: str | None, *, truncate: bool) -> 
         print(f"      {line}")
 
 
-def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool = False) -> None:
+def print_enriched_row(
+    row: EnrichedRow,
+    *,
+    stale: bool,
+    same_company: SameCompanyApplication | None,
+    short: bool = False,
+    truncate: bool = False,
+) -> None:
     """Print the enriched lead fields.
 
-    With `short`, omit job and company description blocks. With `truncate`,
-    cap each description block at its first line (for multi-row listings).
+    `stale` and `same_company` are precomputed annotations. With `short`, omit
+    job and company description blocks. With `truncate`, cap each description
+    block at its first line (for multi-row listings).
     """
     tag = ""
     if not row["actionable"]:
@@ -357,9 +373,8 @@ def print_enriched_row(row: EnrichedRow, *, short: bool = False, truncate: bool 
     if not row["accepting_applications"]:
         print("  - no longer accepting applications")
     checked = datetime.fromisoformat(row["enriched_last_at"]).date().isoformat()
-    threshold = current_config()["stale_after_days"]
-    print(f"  - Last Enriched At: {checked}{staleness_tag(row, threshold)}")
-    if line := same_company_line(row["company"], row["provider"], row["posting_id"]):
+    print(f"  - Last Enriched At: {checked}{staleness_tag(stale)}")
+    if line := same_company_line(same_company):
         print(line)
     if short:
         return
@@ -429,7 +444,11 @@ def _enrich_one(target: StoredJob) -> EnrichedRow:
     enriched = persist_event(DataKind.ENRICHMENT, row, project_enrichment)
     enriched_row = enriched["rows"][store_key(target["provider"], target["posting_id"])]
 
-    print_enriched_row(enriched_row)
+    stale = is_stale(enriched_row, current_config()["stale_after_days"])
+    same_company = same_company_application(
+        enriched_row["company"], enriched_row["provider"], enriched_row["posting_id"]
+    )
+    print_enriched_row(enriched_row, stale=stale, same_company=same_company)
     print()
     print(f"wrote to {short_path(store_path(DataKind.ENRICHMENT))}")
     return enriched_row
@@ -506,25 +525,68 @@ def enrich_posting_id(posting_id: str) -> None:
     _enrich_one(target)
 
 
-def print_enriched() -> None:
-    """Print every enriched job detail stored so far, in enrichment order."""
-    with paged():
-        require_events(DataKind.ENRICHMENT)
-        enriched = project_enrichment(current_provider().name)
+def _enriched_list_view(enriched: EnrichedStore) -> ListView:
+    """Build the enrichment store as a typed list view."""
+    from .discovery import project_discovery
+    from .screening import project_screening
+    from .tailoring import project_tailoring
+    from .tracking import project_tracking
+    from .views import ListView, build_posting_view
 
-        rows = enriched["rows"].values()
-        rejected_count = sum(1 for row in rows if not row["actionable"])
+    provider = current_provider().name
+    leads = {row["posting_id"]: row for row in project_discovery(provider)["rows"]}
+    screened = project_screening(provider)["rows"]
+    tailored = project_tailoring(provider)["rows"]
+    tracked = project_tracking(provider)["rows"]
+    rows = list(enriched["rows"].values())
+    postings = [
+        build_posting_view(
+            row["posting_id"],
+            after=DataKind.ENRICHMENT,
+            lead=leads.get(row["posting_id"]),
+            enrichment=row,
+            screening=screened.get(store_key(row["provider"], row["posting_id"])),
+            package=tailored.get(store_key(row["provider"], row["posting_id"])),
+            tracking=tracked.get(store_key(row["provider"], row["posting_id"])),
+        )
+        for row in rows
+    ]
+    rejected = sum(1 for row in rows if not row["actionable"])
+    return ListView(
+        summary={"enriched": len(rows), "rejected": rejected},
+        postings=postings,
+    )
+
+
+def print_enriched(*, json_output: bool = False) -> None:
+    """Print every enriched job detail stored so far, in enrichment order."""
+    require_events(DataKind.ENRICHMENT)
+    view = _enriched_list_view(project_enrichment(current_provider().name))
+    if json_output:
+        emit_json(view)
+        return
+    with paged():
         print(
-            f"{GREEN}{len(enriched['rows'])}{RESET} enriched "
-            f"({RED}{rejected_count}{RESET} rejected)"
+            f"{GREEN}{view.summary['enriched']}{RESET} enriched "
+            f"({RED}{view.summary['rejected']}{RESET} rejected)"
         )
         print()
-        for row in rows:
-            print_enriched_row(row, truncate=True)
-            print(stage_line(row["provider"], row["posting_id"], DataKind.ENRICHMENT))
+        for posting in view.postings:
+            row = posting.enrichment
+            assert row is not None, "enrichment view has no enrichment"
+            assert posting.stale is not None, "enrichment view has no staleness"
+            print_enriched_row(
+                row,
+                stale=posting.stale,
+                same_company=posting.same_company_application,
+                truncate=True,
+            )
+            print(stage_line(posting.stage, posting.stage_detail, DataKind.ENRICHMENT))
 
         reasons = Counter(
-            row["rejected_reason"] for row in rows if row["rejected_reason"] is not None
+            posting.enrichment["rejected_reason"]
+            for posting in view.postings
+            if posting.enrichment is not None and posting.enrichment["rejected_reason"] is not None
         )
         if reasons:
             print()

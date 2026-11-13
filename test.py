@@ -5102,6 +5102,10 @@ print("ok")
                 posting["lead"]["posting_url"],
                 "https://www.linkedin.com/jobs/view/5550000001",
             )
+            self.assertEqual(
+                [key for key in posting["enrichment"] if key.endswith("_html")],
+                [],
+            )
 
             result = shobr("track", "5550000001", "applied", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -5121,6 +5125,150 @@ print("ok")
             self.assertIsNone(posting["stale"])
             self.assertIsNone(posting["closed"])
             self.assertEqual(posting["lead"]["posting_id"], "100")
+
+    def test_discovered_json_outputs_list_view(self) -> None:
+        """discovered --json emits the stored leads as a semantic list view."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            result = shobr("discovered", "--json", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("\x1b", result.stdout)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["summary"], {"leads": 1, "rejected": 0})
+            posting = data["postings"][0]
+            self.assertEqual(posting["posting_id"], "1234567890")
+            self.assertEqual(posting["stage"], "enrichment")
+            self.assertIsNone(posting["stage_detail"])
+            self.assertEqual(posting["lead"]["title"], "Test Engineer")
+            self.assertEqual(posting["enrichment"]["title"], "Test Engineer")
+            self.assertIsNone(posting["screening"])
+
+    def test_enriched_json_outputs_list_view(self) -> None:
+        """enriched --json emits the enrichment store as a semantic list view."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            seed_enrichment_event(
+                data_home,
+                posting_id="2222222222",
+                location="Berlin, Germany",
+                location_type="On-site",
+            )
+            result = shobr("enriched", "--json", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("\x1b", result.stdout)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["summary"], {"enriched": 2, "rejected": 1})
+            self.assertEqual(
+                [posting["posting_id"] for posting in data["postings"]],
+                ["1234567890", "2222222222"],
+            )
+            rejected = data["postings"][1]
+            self.assertFalse(rejected["enrichment"]["actionable"])
+            self.assertIn("location", rejected["enrichment"]["rejected_reason"])
+            self.assertIsNone(rejected["lead"])
+            self.assertEqual(
+                [key for key in rejected["enrichment"] if key.endswith("_html")],
+                [],
+            )
+
+    def test_screened_json_outputs_list_view(self) -> None:
+        """screened --json emits the filtered screening store as a list view."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            seed_human_review(data_home, posting_id="1234567890", score=4)
+            result = shobr("screened", "--json", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("\x1b", result.stdout)
+            data = json.loads(result.stdout)
+            self.assertEqual(
+                data["summary"],
+                {
+                    "screened": 1,
+                    "pursue": 1,
+                    "skip": 0,
+                    "lacking_llm_review": 0,
+                    "pending_human_review": 0,
+                },
+            )
+            posting = data["postings"][0]
+            self.assertEqual(posting["stage"], "screening")
+            self.assertIsNone(posting["stage_detail"])
+            self.assertEqual(posting["screening"]["decision"], "pursue")
+            self.assertEqual(posting["screening"]["human"]["score"], 4)
+
+            result = shobr("screened", "--score", "1", "--json", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["summary"]["screened"], 0)
+            self.assertEqual(data["postings"], [])
+
+    def test_tracked_json_outputs_list_view(self) -> None:
+        """tracked --json emits the tracking store as a semantic list view."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            seed_human_review(data_home, posting_id="1234567890", score=4)
+            seed_tailored_package(data_home, posting_id="1234567890")
+            seed_tracking(data_home, posting_id="1234567890", status="applied")
+            result = shobr("tracked", "--json", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("\x1b", result.stdout)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["summary"]["tracked"], 1)
+            self.assertEqual(data["summary"]["by_status"]["applied"], 1)
+            self.assertEqual(data["summary"]["by_status"]["interviewing"], 0)
+            posting = data["postings"][0]
+            self.assertEqual(posting["posting_id"], "1234567890")
+            self.assertEqual(posting["stage"], "tracking")
+            self.assertIsNone(posting["stage_detail"])
+            self.assertEqual(posting["tracking"]["status"], "applied")
+            self.assertEqual(posting["package"]["slug"], "testco-1234567890")
+
+    def test_status_json_outputs_status_view(self) -> None:
+        """status --json emits the funnel as stage-keyed semantic counts."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = data_home.env
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+            result = shobr("track", "5550000001", "applied", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            result = shobr("status", "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("\x1b", result.stdout)
+            data = json.loads(result.stdout)
+            self.assertEqual(
+                list(data),
+                ["discovery", "enrichment", "screening", "tailoring", "tracking"],
+            )
+            self.assertEqual(data["discovery"]["total"], 12)
+            self.assertEqual(data["enrichment"]["total"], 1)
+            self.assertEqual(data["enrichment"]["pending_screening"], {"count": 0, "stale": 0})
+            self.assertEqual(
+                data["screening"]["total"],
+                {"count": 1, "closed": 0, "filtered": 0},
+            )
+            self.assertEqual(data["screening"]["pending_human_review"], {"count": 0, "stale": 0})
+            self.assertEqual(data["screening"]["pending_tailoring"], {"count": 0, "stale": 0})
+            self.assertNotIn("pending_review", data["screening"])
+            self.assertEqual(
+                data["tailoring"]["packages_built"],
+                {"count": 1, "closed": 0, "filtered": 0},
+            )
+            self.assertEqual(data["tailoring"]["pending_review"], {"count": 0, "stale": 0})
+            self.assertEqual(data["tracking"]["applied"], 1)
+            score = next(row for row in data["screening"]["scores"] if row["score"] == 4)
+            self.assertEqual(score, {"score": 4, "llm": 0, "human": 1, "pending_action": 0})
+
+        with TestDataHome() as data_home:
+            result = shobr("status", "--json", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["discovery"]["total"], 0)
+            self.assertEqual(
+                data["tailoring"]["packages_built"],
+                {"count": 0, "closed": 0, "filtered": 0},
+            )
 
     def test_next_empty_home(self) -> None:
         """'shobr next' on a fresh data home offers a fetch, then idles."""
@@ -5728,6 +5876,13 @@ print("ok")
             self.assertIn("5: 1 (1 to tailor)", result.stdout)
             self.assertIn("3: 1\n", result.stdout)
 
+            result = shobr("status", "--json", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            scores = {row["score"]: row for row in data["screening"]["scores"]}
+            self.assertEqual(scores[5], {"score": 5, "llm": 0, "human": 1, "pending_action": 1})
+            self.assertEqual(scores[3], {"score": 3, "llm": 0, "human": 1, "pending_action": 0})
+
     def test_status_omits_invalidated_tailoring(self) -> None:
         """status stops counting a pursue row closed by a later enrichment."""
         with TestDataHome() as data_home:
@@ -6039,10 +6194,54 @@ print("ok")
             result = shobr("status", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             out = _strip_ansi(result.stdout)
-            self.assertEqual(out.count("(1 closed)"), 3)
+            self.assertEqual(out.count("(1 closed)"), 2)
             self.assertRegex(out, r"Total Screened:\s+1 \(1 closed\)")
             self.assertRegex(out, r"Packages Built:\s+1 \(1 closed\)")
-            self.assertRegex(out, r"Applied:\s+1 \(1 closed\)")
+            self.assertNotRegex(out, r"Applied:\s+1 \([^)]*closed\)")
+
+            result = shobr("status", "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(
+                data["screening"]["total"],
+                {"count": 1, "closed": 1, "filtered": 0},
+            )
+            self.assertEqual(
+                data["tailoring"]["packages_built"],
+                {"count": 1, "closed": 1, "filtered": 0},
+            )
+            self.assertEqual(data["tracking"]["applied"], 1)
+
+    def test_status_tracking_rows_omit_filtered_notes(self) -> None:
+        """status does not annotate tracked rows with filter validity."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            seed_human_review(data_home, posting_id="1234567890", score=4)
+            seed_tailored_package(data_home, posting_id="1234567890")
+            seed_tracking(data_home, posting_id="1234567890", status="applied")
+            seed_enrichment_event(
+                data_home,
+                posting_id="1234567890",
+                location="Berlin, Germany",
+                location_type="On-site",
+                fetched_at="2026-09-14T00:00:00+00:00",
+            )
+
+            result = shobr("status", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = _strip_ansi(result.stdout)
+            self.assertRegex(out, r"Total Screened:\s+1 \(1 filtered\)")
+            self.assertRegex(out, r"Packages Built:\s+1 \(1 filtered\)")
+            self.assertNotRegex(out, r"Applied:\s+1 \([^)]*(closed|filtered)\)")
+
+            result = shobr("status", "--json", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["tracking"]["applied"], 1)
+            self.assertEqual(
+                set(data["tracking"]),
+                {"applied", "interviewing", "offer", "rejected", "ghosted", "withdrawn"},
+            )
 
     def test_status_counts_each_row_once_closed_first(self) -> None:
         """status splits un-actionable rows into closed vs filtered, no doubles."""
@@ -6067,6 +6266,14 @@ print("ok")
             out = _strip_ansi(result.stdout)
             self.assertRegex(out, r"Total Screened:\s+2 \(1 closed, 1 filtered\)")
             self.assertRegex(out, r"Pending Tailoring:\s+0")
+
+            result = shobr("status", "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(
+                data["screening"]["total"],
+                {"count": 2, "closed": 1, "filtered": 1},
+            )
 
     def test_enriched_shows_checked_date(self) -> None:
         """enriched rows show the last-check date from the latest event."""
@@ -6463,6 +6670,13 @@ print("ok")
             self.assertRegex(out, r"Pending Screening:\s+1 \(1 stale\)")
             self.assertRegex(out, r"Pending Tailoring:\s+3 \(1 stale\)")
             self.assertRegex(out, r"Pending Review:\s+2\n")
+
+            result = shobr("status", "--json", env=data_home.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["enrichment"]["pending_screening"], {"count": 1, "stale": 1})
+            self.assertEqual(data["screening"]["pending_tailoring"], {"count": 3, "stale": 1})
+            self.assertEqual(data["tailoring"]["pending_review"], {"count": 2, "stale": 0})
 
     def test_tailor_next_refuses_stale(self) -> None:
         """tailor-next refuses a stale row instead of building."""
@@ -7022,6 +7236,15 @@ class TestProviderCLI(unittest.TestCase):
             self.assertNotIn("Pending Tailoring:", status.stdout)
             self.assertIn("Pending Review:", status.stdout)
             self.assertRegex(status.stdout, r"Total Leads Found:\s+1\b")
+
+            status_json = shobr("--provider", "notail", "status", "--json", env=env)
+            self.assertEqual(status_json.returncode, 0, status_json.stderr)
+            data = json.loads(status_json.stdout)
+            self.assertNotIn("tailoring", data)
+            self.assertNotIn("pending_tailoring", data["screening"])
+            self.assertEqual(data["screening"]["pending_review"], {"count": 1, "stale": 0})
+            scores = {row["score"]: row for row in data["screening"]["scores"]}
+            self.assertEqual(scores[4]["pending_action"], 1)
 
             next_result = shobr("--provider", "notail", "next", env=env)
             self.assertEqual(next_result.returncode, 0, next_result.stderr)
