@@ -13,6 +13,7 @@ import subprocess
 import sys
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -207,6 +208,40 @@ def store_key(provider: str, posting_id: str) -> str:
     return f"{provider}/{posting_id}"
 
 
+@dataclass(frozen=True)
+class StagePosition:
+    """The furthest stage and the detail shown on the human Stage line."""
+
+    stage: DataKind
+    detail: str | None
+
+
+def stage_position(
+    after: DataKind,
+    *,
+    enriched: bool,
+    screening_decision: str | None,
+    tailored: bool,
+    tracking_status: str | None,
+) -> StagePosition:
+    """Compute the furthest stage and its detail from stage records."""
+    stage = after
+    detail: str | None = None
+    if enriched:
+        stage, detail = DataKind.ENRICHMENT, None
+    if screening_decision is not None:
+        stage = DataKind.SCREENING
+        if after is not DataKind.SCREENING:
+            detail = screening_decision.upper()
+    if tailored:
+        stage, detail = DataKind.TAILORING, None
+    if tracking_status is not None:
+        stage = DataKind.TRACKING
+        if after is not DataKind.TRACKING:
+            detail = tracking_status.upper()
+    return StagePosition(stage=stage, detail=detail)
+
+
 def stage_line(provider: str, posting_id: str, after: DataKind) -> str:
     """Produce a `- Stage: ...` line for CLI output, naming the furthest stage
     reached, and some information about it.
@@ -224,25 +259,19 @@ def stage_line(provider: str, posting_id: str, after: DataKind) -> str:
     from .tracking import project_tracking
 
     key = store_key(provider, posting_id)
-    stage = after
-    detail = ""
-    if key in project_enrichment()["rows"]:
-        stage, detail = DataKind.ENRICHMENT, ""
-    row = project_screening()["rows"].get(key)
-    if row is not None:
-        stage = DataKind.SCREENING
-        if after is not DataKind.SCREENING:
-            detail = f" ({str(row['decision']).upper()})"
-    if key in project_tailoring()["rows"]:
-        stage, detail = DataKind.TAILORING, ""
-    row = project_tracking()["rows"].get(key)
-    if row is not None:
-        stage = DataKind.TRACKING
-        if after is not DataKind.TRACKING:
-            detail = f" ({str(row['status']).upper()})"
-    if _STAGE_RANK[stage] > _STAGE_RANK[after]:
-        return f"  - Stage: {BLUE}{stage.value}{RESET}{detail}"
-    return f"  - Stage: {stage.value}{detail}"
+    screening_row = project_screening()["rows"].get(key)
+    tracking_row = project_tracking()["rows"].get(key)
+    position = stage_position(
+        after,
+        enriched=key in project_enrichment()["rows"],
+        screening_decision=str(screening_row["decision"]) if screening_row is not None else None,
+        tailored=key in project_tailoring()["rows"],
+        tracking_status=str(tracking_row["status"]) if tracking_row is not None else None,
+    )
+    detail = f" ({position.detail})" if position.detail is not None else ""
+    if _STAGE_RANK[position.stage] > _STAGE_RANK[after]:
+        return f"  - Stage: {BLUE}{position.stage.value}{RESET}{detail}"
+    return f"  - Stage: {position.stage.value}{detail}"
 
 
 def applications_by_company(companies: dict[str, str]) -> dict[str, dict[str, str]]:
@@ -295,14 +324,22 @@ def cooldown_rejection_reason(
     return None
 
 
-def same_company_line(
-    company: str, provider: str, posting_id: str, *, plain: bool = False
-) -> str | None:
-    """Generate 'Last Applied To Same Company' line for another posting's row.
+@dataclass(frozen=True)
+class SameCompanyApplication:
+    """Another posting's non-withdrawn application at the same company."""
 
-    Latest date in which a non-withdrawn lead was first tracked for `company`
-    on any board, excluding the `(provider, posting_id)` itself. With `plain`,
-    markdown without ANSI (for the $EDITOR template).
+    posting_id: str
+    first_tracked_at: str
+    date: str
+
+
+def same_company_application(
+    company: str, provider: str, posting_id: str
+) -> SameCompanyApplication | None:
+    """Find the latest non-withdrawn application at the same company.
+
+    Excludes the `(provider, posting_id)` itself. Returns None when there is
+    no company, no enrichment store, or no other application.
     """
     if not company:
         return None
@@ -317,11 +354,26 @@ def same_company_line(
     if not candidates:
         return None
     at, key = max(candidates)
-    other_id = key.partition("/")[2]
-    date = datetime.fromisoformat(at).date().isoformat()
+    return SameCompanyApplication(
+        posting_id=key.partition("/")[2],
+        first_tracked_at=at,
+        date=datetime.fromisoformat(at).date().isoformat(),
+    )
+
+
+def same_company_line(
+    company: str, provider: str, posting_id: str, *, plain: bool = False
+) -> str | None:
+    """Generate 'Last Applied To Same Company' line for another posting's row."""
+    application = same_company_application(company, provider, posting_id)
+    if application is None:
+        return None
     if plain:
-        return f"- Last Applied To Same Company: {date} ({other_id})"
-    return f"  - {YELLOW}Last Applied To Same Company:{RESET} {date} ({other_id})"
+        return f"- Last Applied To Same Company: {application.date} ({application.posting_id})"
+    return (
+        f"  - {YELLOW}Last Applied To Same Company:{RESET} {application.date} "
+        f"({application.posting_id})"
+    )
 
 
 def company_label(row: Mapping[str, object]) -> str:

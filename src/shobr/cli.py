@@ -61,6 +61,16 @@ def _force_arg(subparser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return subparser
 
 
+def _json_arg(subparser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add a --json flag for read-only commands."""
+    subparser.add_argument(
+        "--json",
+        action="store_true",
+        help="print the command output as JSON",
+    )
+    return subparser
+
+
 def _provider_arg(target: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """Add a --provider flag (LinkedIn by default).
 
@@ -215,6 +225,7 @@ def main() -> None:
         action="store_true",
         help="only print packages awaiting review (not tracked)",
     )
+    _json_arg(tailored_parser)
     _provider_arg(tailored_parser)
 
     tailor = sub.add_parser(
@@ -267,6 +278,7 @@ def main() -> None:
         help="print every stored detail for a posting, whatever stage it reached",
     )
     show_parser.add_argument("posting_id", help="posting id to show")
+    _json_arg(show_parser)
     _provider_arg(show_parser)
 
     for name, help_text in [
@@ -322,14 +334,14 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         "screen-llm": lambda: screen_llm_posting_id(args.posting_id, args.print_prompt, args.force),
         "screen-llm-next": lambda: screen_llm_next(args.print_prompt, args.force),
         "screen-llm-all": lambda: screen_llm_all(args.force),
-        "tailored": lambda: print_tailored(args.pending_review),
+        "tailored": lambda: print_tailored(args.pending_review, json_output=args.json),
         "tailor": lambda: tailor_posting_id(args.posting_id, args.print_prompt, args.force),
         "tailor-next": lambda: tailor_next(args.print_prompt, args.force),
         "tailor-all": lambda: tailor_all(args.force),
         "tracked": print_tracked,
         "track": lambda: track_posting_id(args.posting_id, args.status, args.note),
         "review": lambda: review_posting_id(args.posting_id),
-        "show": lambda: show_posting(args.posting_id),
+        "show": lambda: show_posting(args.posting_id, json_output=args.json),
         "review-next": review_next,
         "status": print_status,
         "next": lambda: next_posting_id(args.posting_id) if args.posting_id else run_next(),

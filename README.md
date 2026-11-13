@@ -134,7 +134,7 @@ You can run:
   - Have SHOBR automatically prompt you for the next logical action across the
     entire pipeline (rather than running the manual, "plumbing" command
     directly).
-- **`shobr show <posting_id>`**
+- **`shobr show <posting_id> [--json]`**
   - Prints every stored detail for one posting at any stage, including the
     furthest stage reached.
 
@@ -232,7 +232,7 @@ if it overflows.
     pursue-able job.
 - **`shobr tailor-all`**
   - Builds packages for every pursue-able job without one.
-- **`shobr tailored`**
+- **`shobr tailored [--json]`**
   - Prints all generated packages.
 - **`shobr tailored --pending-review`**
   - Prints only packages that have not been tracked yet, meaning the ones

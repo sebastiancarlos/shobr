@@ -14,7 +14,6 @@ from .core import (
     DataKind,
     ShobrError,
     cached_projection,
-    event_log,
     get_enriched_row_on_stage,
     paged,
     persist_event,
@@ -25,7 +24,6 @@ from .core import (
     require_events,
     retry_llm_task,
     row_header,
-    same_company_line,
     shobr_command,
     short_path,
     stage_line,
@@ -48,6 +46,7 @@ from .enrichment import (
     staleness_tag,
     validity_tag,
 )
+from .output import emit_json
 from .providers.base import current_config, current_provider
 from .screening import (
     PROFILE_FILES,
@@ -61,6 +60,7 @@ from .screening import (
     profile_blocks,
     project_screening,
 )
+from .views import ListView, build_posting_view
 
 TAILOR_MAX_REWRITES = 4
 TAILOR_MAX_TOKENS = 4096
@@ -125,41 +125,85 @@ def project_tailoring(provider: str | None = None) -> TailoredStore:
     return {"tailored_at": events[-1]["tailored_at"], "rows": rows}
 
 
-def print_tailored(pending_review: bool = False) -> None:
-    """Print tailored packages, optionally only those awaiting review."""
-    with paged():
-        require_events(DataKind.TAILORING)
-        tailored = project_tailoring(current_provider().name)
-        rows = list(tailored["rows"].values())
-        if pending_review:
-            from .pipeline import pending_review_ids
+def _tailored_rows(pending_review: bool) -> list[TailoringRow]:
+    """Current provider's packages, optionally only those awaiting review."""
+    require_events(DataKind.TAILORING)
+    rows = list(project_tailoring(current_provider().name)["rows"].values())
+    if not pending_review:
+        return rows
+    from .pipeline import pending_review_ids
 
-            pending = pending_review_ids()
-            rows = [row for row in rows if row["posting_id"] in pending]
+    pending = pending_review_ids()
+    return [row for row in rows if row["posting_id"] in pending]
 
-        print(f"{BLUE}{len(rows)}{RESET} tailored")
-        print()
-        assert event_log(DataKind.ENRICHMENT).exists(), "tailoring data implies enrichment data"
-        enriched = project_enrichment(current_provider().name)
-        for row in rows:
-            eref = enriched["rows"][store_key(row["provider"], row["posting_id"])]
-            print(f"{BOLD}{row_header(eref)}{RESET}{validity_tag(eref)}")
-            print(f"  - {eref['title']}")
-            print(f"  - Slug: {row['slug']}")
-            print(f"  - {BOLD}Application dir:{RESET} {short_path(row['app_dir'])}")
+
+def _tailored_list_view(pending_review: bool) -> ListView:
+    """Build the tailored list view shared by text and JSON renderers."""
+    from .discovery import project_discovery
+    from .screening import project_screening
+    from .tracking import project_tracking
+
+    provider = current_provider().name
+    rows = _tailored_rows(pending_review)
+    leads = {row["posting_id"]: row for row in project_discovery(provider)["rows"]}
+    enriched = project_enrichment(provider)["rows"]
+    screened = project_screening(provider)["rows"]
+    tracked = project_tracking(provider)["rows"]
+    postings = [
+        build_posting_view(
+            row["posting_id"],
+            after=DataKind.TAILORING,
+            lead=leads.get(row["posting_id"]),
+            enrichment=enriched[store_key(row["provider"], row["posting_id"])],
+            screening=screened.get(store_key(row["provider"], row["posting_id"])),
+            package=row,
+            tracking=tracked.get(store_key(row["provider"], row["posting_id"])),
+        )
+        for row in rows
+    ]
+    return ListView(
+        summary={"tailored": len(postings)},
+        postings=postings,
+    )
+
+
+def _print_tailored_list_view(view: ListView) -> None:
+    """Print a tailored list view in the human-readable form."""
+    print(f"{BLUE}{view.summary['tailored']}{RESET} tailored")
+    print()
+    for posting in view.postings:
+        enriched = posting.enrichment
+        package = posting.package
+        assert enriched is not None and package is not None, "tailored rows are enriched"
+        print(f"{BOLD}{row_header(enriched)}{RESET}{validity_tag(enriched)}")
+        print(f"  - {enriched['title']}")
+        print(f"  - Slug: {package['slug']}")
+        print(f"  - {BOLD}Application dir:{RESET} {short_path(package['app_dir'])}")
+        rewrites = package["rewrites"]
+        print(f"  - Rewrites: {GREEN if rewrites == 0 else YELLOW}{rewrites}{RESET}")
+        print(stage_line(package["provider"], package["posting_id"], DataKind.TAILORING))
+        checked = datetime.fromisoformat(enriched["enriched_last_at"]).date().isoformat()
+        threshold = current_config()["stale_after_days"]
+        print(f"  - Last Enriched At: {checked}{staleness_tag(enriched, threshold)}")
+        built = datetime.fromisoformat(package["tailored_at"]).date().isoformat()
+        print(f"  - Tailored At: {built}")
+        if application := posting.same_company_application:
             print(
-                f"  - Rewrites: {GREEN if row['rewrites'] == 0 else YELLOW}{row['rewrites']}{RESET}"
+                f"  - {YELLOW}Last Applied To Same Company:{RESET} "
+                f"{application.date} ({application.posting_id})"
             )
-            print(stage_line(row["provider"], row["posting_id"], DataKind.TAILORING))
-            checked = datetime.fromisoformat(eref["enriched_last_at"]).date().isoformat()
-            threshold = current_config()["stale_after_days"]
-            print(f"  - Last Enriched At: {checked}{staleness_tag(eref, threshold)}")
-            built = datetime.fromisoformat(row["tailored_at"]).date().isoformat()
-            print(f"  - Tailored At: {built}")
-            if line := same_company_line(eref["company"], eref["provider"], row["posting_id"]):
-                print(line)
 
-        print()
+    print()
+
+
+def print_tailored(pending_review: bool = False, *, json_output: bool = False) -> None:
+    """Print tailored packages, optionally only those awaiting review."""
+    view = _tailored_list_view(pending_review)
+    if json_output:
+        emit_json(view)
+        return
+    with paged():
+        _print_tailored_list_view(view)
 
 
 def _tailor_edits_prompt(row: EnrichedRow, profile: TailoringProfile) -> str:

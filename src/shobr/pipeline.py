@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 
 from .color import BLUE, BOLD, GREEN, RED, RESET, YELLOW
-from .core import ShobrError, paged, shobr_command, store_key
+from .core import DataKind, ShobrError, paged, shobr_command, store_key
 from .discovery import StoredJob, discover, print_lead, project_discovery
 from .enrichment import (
     DEFAULT_ENRICH_ALL_DELAY,
@@ -17,6 +17,7 @@ from .enrichment import (
     is_stale,
     project_enrichment,
 )
+from .output import emit_json
 from .providers.base import current_config, current_provider
 from .screening import (
     SCORE_COLORS,
@@ -47,6 +48,7 @@ from .tracking import (
     review_next,
     review_posting_id,
 )
+from .views import build_posting_view
 
 
 def _load_stores() -> tuple[
@@ -358,20 +360,32 @@ def print_status() -> None:
         print()
 
 
-def show_posting(posting_id: str) -> None:
+def show_posting(posting_id: str, *, json_output: bool = False) -> None:
     """Print every stored detail for one posting, whatever stage it reached."""
-    leads, enriched, _, tailored, _ = _load_stores()
+    leads, enriched, screened, tailored, tracked = _load_stores()
     key = store_key(current_provider().name, posting_id)
     lead = next((row for row in leads if row["posting_id"] == posting_id), None)
     enriched_row = next((row for row in enriched if row["posting_id"] == posting_id), None)
     if lead is None and enriched_row is None:
         raise ShobrError(f"posting {posting_id} not found in leads or enrichment store")
-    if enriched_row is None:
-        assert lead is not None
-        with paged():
-            print_lead(lead)
+    view = build_posting_view(
+        posting_id,
+        after=DataKind.DISCOVERY,
+        lead=lead,
+        enrichment=enriched_row,
+        screening=screened.get(key),
+        package=tailored.get(key),
+        tracking=tracked.get(key),
+    )
+    if json_output:
+        emit_json(view)
         return
-    print_review(enriched_row, tailored.get(key), lead=lead, show_stage=True)
+    if view.enrichment is None:
+        assert view.lead is not None
+        with paged():
+            print_lead(view.lead)
+        return
+    print_review(view.enrichment, view.package, lead=view.lead, show_stage=True)
 
 
 def _confirm(prompt: str) -> bool:

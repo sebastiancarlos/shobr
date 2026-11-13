@@ -4745,6 +4745,33 @@ print("ok")
             self.assertIn("fakeco-5550000001", result.stdout)
             self.assertIn("Rewrites: 0", result.stdout)
 
+    def test_tailored_json_outputs_list_view(self) -> None:
+        """tailored --json emits a semantic list view with no ANSI."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = data_home.env
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+
+            result = shobr("tailored", "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("\x1b", result.stdout)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["summary"], {"tailored": 1})
+            posting = data["postings"][0]
+            self.assertEqual(posting["posting_id"], "5550000001")
+            self.assertEqual(posting["stage"], "tailoring")
+            self.assertIsNone(posting["stage_detail"])
+            self.assertFalse(posting["closed"])
+            self.assertEqual(
+                posting["enrichment"]["title"],
+                "Senior Software Engineer, Widget Platform",
+            )
+            self.assertEqual(posting["screening"]["decision"], "pursue")
+            self.assertEqual(posting["package"]["slug"], "testco-5550000001")
+            self.assertIsNone(posting["tracking"])
+            self.assertIsNone(posting["same_company_application"])
+
     def test_tailored_pending_review_filters_tracked(self) -> None:
         """tailored --pending-review hides packages already tracked."""
         with TestDataHome() as data_home:
@@ -4781,6 +4808,14 @@ print("ok")
             self.assertIn("1 tailored", out)
             self.assertNotIn("[TestCo] 5550000001", out)
             self.assertIn("[TestCo] 5550000002", out)
+
+            result = shobr("tailored", "--pending-review", "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(
+                [posting["posting_id"] for posting in data["postings"]],
+                ["5550000002"],
+            )
 
             result = shobr("track", "5550000002", "applied", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -5044,6 +5079,48 @@ print("ok")
             result = shobr("show", "999", env=env)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("not found in leads or enrichment store", result.stderr)
+
+    def test_show_json_outputs_posting_view(self) -> None:
+        """show --json emits one semantic posting view at any stage."""
+        with TestDataHome() as data_home:
+            restore_snapshot(data_home, snapshot_screen_base())
+            env = data_home.env
+            seed_human_review(data_home)
+            seed_tailored_package(data_home)
+
+            result = shobr("show", "5550000001", "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("\x1b", result.stdout)
+            posting = json.loads(result.stdout)
+            self.assertEqual(posting["posting_id"], "5550000001")
+            self.assertEqual(posting["stage"], "tailoring")
+            self.assertIsNone(posting["stage_detail"])
+            self.assertFalse(posting["closed"])
+            self.assertEqual(posting["screening"]["decision"], "pursue")
+            self.assertEqual(posting["package"]["resume_md"], "seeded resume")
+            self.assertEqual(
+                posting["lead"]["posting_url"],
+                "https://www.linkedin.com/jobs/view/5550000001",
+            )
+
+            result = shobr("track", "5550000001", "applied", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = shobr("show", "5550000001", "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            posting = json.loads(result.stdout)
+            self.assertEqual(posting["stage"], "tracking")
+            self.assertEqual(posting["stage_detail"], "APPLIED")
+
+            seed_provider_discovery(data_home, "linkedin", "100")
+            result = shobr("show", "100", "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            posting = json.loads(result.stdout)
+            self.assertEqual(posting["stage"], "discovery")
+            self.assertIsNone(posting["stage_detail"])
+            self.assertIsNone(posting["enrichment"])
+            self.assertIsNone(posting["stale"])
+            self.assertIsNone(posting["closed"])
+            self.assertEqual(posting["lead"]["posting_id"], "100")
 
     def test_next_empty_home(self) -> None:
         """'shobr next' on a fresh data home offers a fetch, then idles."""
