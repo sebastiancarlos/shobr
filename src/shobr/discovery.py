@@ -147,10 +147,11 @@ def base_reject_reason(
     return None
 
 
-def _reject_job(row: JobRow, filters: Config) -> str | None:
+def discovery_rejection_reason(row: JobRow, filters: Config) -> str | None:
     """Return a rejection reason if the job fails the configured pre-filter.
 
-    First matching rule provides the reason.
+    First matching rule provides the reason. This is the shared discovery
+    decision used by the current projection and by historical replays.
     """
     return base_reject_reason(
         row["location"],
@@ -194,7 +195,7 @@ def project_discovery(provider: str | None = None) -> DiscoveredStore:
     for key, row in latest.items():
         if provider is not None and row["provider"] != provider:
             continue
-        rejected_reason = _reject_job(row, filters)
+        rejected_reason = discovery_rejection_reason(row, filters)
         if rejected_reason is None:
             rejected_reason = cooldown_rejection_reason(
                 apps_by_company,

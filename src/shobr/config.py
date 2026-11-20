@@ -1,19 +1,25 @@
 """User configuration (`config.toml` file setup)."""
 
 import functools
+import hashlib
+import json
 import os
 import re
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict, cast
 
 from .core import (
     SHOBR_CONFIG_DIR,
+    DataKind,
     EmploymentType,
     LocationType,
     ShobrError,
+    event_log,
     fold_accents,
     get_template,
+    read_event,
     shobr_command,
     short_path,
 )
@@ -93,8 +99,9 @@ def _raw_config() -> dict:
         raise ShobrError(f"config.toml: invalid TOML: {exc}") from exc
 
 
-def _parse_config(data: dict) -> Config:
-    """Validate one raw config table, raising on any problem."""
+def parse_config(data: dict, provider: str | None = None) -> Config:
+    """Validate one raw config table, optionally applying one provider section,
+    and return it."""
     unknown_keys = sorted(key for key in data if key not in _KNOWN_CONFIG_KEYS)
     if unknown_keys:
         raise ShobrError(
@@ -193,6 +200,12 @@ def _parse_config(data: dict) -> Config:
             )
         providers[provider_name] = section
 
+    if provider is not None:
+        section = providers.get(provider, {})
+        overrides = {key: value for key, value in section.items() if key in _OVERRIDABLE_KEYS}
+        base = {key: value for key, value in data.items() if key != "providers"}
+        return parse_config({**base, **overrides})
+
     return {
         "titles": titles,
         "workplace_types": workplace_types,
@@ -216,7 +229,7 @@ def _parse_config(data: dict) -> Config:
 @functools.lru_cache(maxsize=1)
 def _load_config() -> Config:
     """Read and validate the top-level config.toml, without provider overrides."""
-    return _parse_config(_raw_config())
+    return parse_config(_raw_config())
 
 
 @functools.cache
@@ -225,14 +238,7 @@ def load_provider_config(name: str) -> Config:
 
     Only keys shobr knows at the top level are overridable.
     """
-    _load_config()  # validate the whole file, including every provider section
-    raw = _raw_config()
-    section = raw.get("providers", {}).get(name, {})
-    if not isinstance(section, dict):
-        section = {}
-    overrides = {key: value for key, value in section.items() if key in _OVERRIDABLE_KEYS}
-    base = {key: value for key, value in raw.items() if key != "providers"}
-    return _parse_config({**base, **overrides})
+    return parse_config(_raw_config(), provider=name)
 
 
 def provider_options(name: str) -> dict[str, object]:
@@ -287,3 +293,72 @@ def scaffold_config() -> bool:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(get_template("config.toml"), encoding="utf-8")
     return True
+
+
+# --- The following functions deal with the config event log, which exists only
+#     for providing historical informatino for the progress chart generation.
+
+
+def _raw_config_hash(raw: dict) -> str:
+    """Return the content hash of one raw config."""
+    canonical = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def get_config_events(data_home: Path | None = None) -> list[dict[str, object]]:
+    """Return the config event log, oldest first, validating every event."""
+    path = (
+        data_home / DataKind.CONFIG.value / "events.jsonl"
+        if data_home is not None
+        else event_log(DataKind.CONFIG)
+    )
+    events = read_event(path)
+    for event in events:
+        if not isinstance(event.get("recorded_at"), str) or not event["recorded_at"]:
+            raise ShobrError("config event is missing recorded_at")
+        if not isinstance(event.get("config_hash"), str) or not event["config_hash"]:
+            raise ShobrError("config event is missing config_hash")
+        raw_config = event.get("config")
+        if not isinstance(raw_config, dict):
+            raise ShobrError("config event is missing config")
+        if _raw_config_hash(raw_config) != event["config_hash"]:
+            raise ShobrError("config event hash does not match its config")
+    return events
+
+
+def _last_config_event() -> dict[str, object] | None:
+    """Return the most recent config event, if any."""
+    events = get_config_events()
+    return events[-1] if events else None
+
+
+def _append_config_event(raw: dict, digest: str) -> None:
+    """Append one config event to the history log."""
+    recorded_at = datetime.now(UTC).isoformat(timespec="seconds")
+    event = {
+        "recorded_at": recorded_at,
+        "config_hash": digest,
+        "config": raw,
+    }
+    path = event_log(DataKind.CONFIG)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(event) + "\n")
+
+
+def ensure_config_event() -> str:
+    """Append the current config when it differs from the last config event."""
+    raw = _raw_config()
+    config = parse_config(raw)
+    for provider_name in config["providers"]:
+        parse_config(raw, provider=provider_name)
+    digest = _raw_config_hash(raw)
+    if (last := _last_config_event()) is not None and last.get("config_hash") == digest:
+        return digest
+    _append_config_event(raw, digest)
+    return digest

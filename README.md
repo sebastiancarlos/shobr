@@ -46,7 +46,9 @@ them FOSS. This one's mine, and relies on:
 - **Event-Sourced Data:** All data (discovered jobs, screenings, tracking) is
   saved in append-only JSONL event logs and projected into state files. You
   can interrupt the pipeline, or recompute lead approval with new rules, at
-  any time without data loss.
+  any time without data loss. Config changes are recorded in the same
+  event-sourced way, so progress charts can plot each decision under the rules
+  that were active at the time.
 - **Markdown-Based CV Toolchain:** Resumes are tailored in Markdown and
   compiled to ATS-readable PDFs (via Groff and Pandoc). All deliverables are
   put in per-application folders.
@@ -54,6 +56,15 @@ them FOSS. This one's mine, and relies on:
   framework.
 - **Not Vibecoded**: 3500 LOC (including comments) at time of writing.
   Somewhat atypical in this space.
+- **Visualization:** `shobr progress` renders charts showing how the pending
+  backlog and overall status changed over time (even as you changed historical
+  fitering configuration which made some privous posted become filtered or
+  newly valid)
+
+<p align="center">
+  <img src="docs/progress-linkedin-last-week.png" alt="LinkedIn progress chart for last week" width="48%">
+  <img src="docs/progress-linkedin-6months.png" alt="LinkedIn progress chart for the last six months" width="48%">
+</p>
 
 ## Installation
 
@@ -90,6 +101,14 @@ cd shobr
 uv sync               # install the single runtime dependency, `any-llm-sdk[openai]`
 uv tool install .     # Put the `shobr` CLI on `PATH`
 shobr --help
+```
+
+The optional `charts` extra installs `matplotlib` for the chart rendered via
+`shobr progress`:
+
+```sh
+uv sync --extra charts
+uv tool install '.[charts]'
 ```
 
 Because SHOBR leverages `roffume` to compile Markdown resumes into PDFs, you
@@ -137,6 +156,13 @@ You can run:
 - **`shobr show <posting_id> [--json]`**
   - Prints every stored detail for one posting at any stage, including the
     furthest stage reached.
+- **`shobr progress [--range RANGE] [--out DIR] [--json] [--no-open]`**
+  - Renders progress charts from the event logs. PNG rendering requires the
+    optional `charts` extra. Ranges are `week` (default), `last-week`, `month`,
+    `last-month`, `6months`, and `year`. Charts use your local timezone, with
+    Monday as the week start. Images go to `/tmp/shobr` and open automatically
+    (unless passing `--no-open`).
+  - `--json` prints the raw chart data instead of rendering.
 
 **Example `shobr status` output:**
 
@@ -509,6 +535,7 @@ shobr/
     tailoring.py            tailoring stage (CV toolchain contract)
     tracking.py             tracking stage
     pipeline.py             next/dispatcher
+    viz/                    progress data and chart rendering
     config.py               config.toml loading + validation
     color.py                terminal palette
 ```
@@ -517,16 +544,18 @@ shobr/
 
 SHOBR uses an Event Sourcing pattern. Every pipeline stage has an append-only
 `events.jsonl` log, which is replayed to create a `.json` projection of
-current state.
+current state. Every persisted event carries the `config_hash` of the config
+that was active when it was written.
 
 ```text
-notifications/ events.jsonl -> notifications.json  # Notification queue
-discovery/     events.jsonl -> discovery.json      # Discovery stage
-enrichment/    events.jsonl -> enrichment.json     # Scraped job details
-screening/     events.jsonl -> screening.json      # LLM and Human scores
-tailoring/     events.jsonl -> tailoring.json      # CV generation status
-tracking/      events.jsonl -> tracking.json       # Kanban funnel status
-smoke/         linkedin-homepage.html              # smoke-test-browser dump
+notifications/ events.jsonl -> notifications.json   # Notification queue
+discovery/     events.jsonl -> discovery.json       # Discovery stage
+enrichment/    events.jsonl -> enrichment.json      # Scraped job details
+screening/     events.jsonl -> screening.json       # LLM and Human scores
+tailoring/     events.jsonl -> tailoring.json       # CV generation status
+tracking/      events.jsonl -> tracking.json        # Kanban funnel status
+config/        events.jsonl                         # Config history
+smoke/         linkedin-homepage.html               # smoke-test-browser dump
 ```
 
 ## Known Limitations
