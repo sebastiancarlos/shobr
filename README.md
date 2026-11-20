@@ -26,6 +26,11 @@ them FOSS. This one's mine, and relies on:
 
 ## Design Philosophy & Features
 
+<p align="center">
+  <img src="docs/progress-linkedin-6months.png" alt="LinkedIn progress chart for the last six months" width="48%">
+  <img src="docs/progress-linkedin-last-week.png" alt="LinkedIn progress chart for last week" width="48%">
+</p>
+
 - **Daily-Driver Stealth:** We don't use headless browsers. SHOBR uses
   [`beachpatrol`](https://github.com/sebastiancarlos/beachpatrol) to drive
   your existing, authenticated browser. To LinkedIn, you are just a normal
@@ -60,11 +65,6 @@ them FOSS. This one's mine, and relies on:
   backlog and overall status changed over time (even as you changed historical
   fitering configuration which made some privous posted become filtered or
   newly valid)
-
-<p align="center">
-  <img src="docs/progress-linkedin-last-week.png" alt="LinkedIn progress chart for last week" width="48%">
-  <img src="docs/progress-linkedin-6months.png" alt="LinkedIn progress chart for the last six months" width="48%">
-</p>
 
 ## Installation
 
