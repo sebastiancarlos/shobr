@@ -56,6 +56,15 @@ them FOSS. This one's mine, and relies on:
   framework.
 - **Not Vibecoded**: 3500 LOC (including comments) at time of writing.
   Somewhat atypical in this space.
+- **Visualization:** `shobr progress` renders charts showing how the pending
+  backlog and overall status changed over time (even as you changed historical
+  fitering configuration which made some privous posted become filtered or
+  newly valid)
+
+<p align="center">
+  <img src="docs/progress-linkedin-last-week.png" alt="LinkedIn progress chart for last week" width="48%">
+  <img src="docs/progress-linkedin-6months.png" alt="LinkedIn progress chart for the last six months" width="48%">
+</p>
 
 ## Installation
 
