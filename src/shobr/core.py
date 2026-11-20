@@ -84,8 +84,9 @@ def fold_accents(text: str) -> str:
 
 
 class DataKind(StrEnum):
-    """Data kinds owning event logs (stages plus notifications)."""
+    """Data kinds owning event logs (stages, notifications, and config)."""
 
+    CONFIG = "config"
     NOTIFICATIONS = "notifications"
     DISCOVERY = "discovery"
     ENRICHMENT = "enrichment"
@@ -106,15 +107,39 @@ def event_log(kind: DataKind) -> Path:
 
 def store_path(kind: DataKind) -> Path:
     """The projection store path for a data kind (always <kind>.json)."""
+    if kind is DataKind.CONFIG:
+        raise ShobrError("config history has no projection store; read config/events.jsonl")
     return data_dir(kind) / f"{kind.value}.json"
 
 
-def read_events(kind: DataKind) -> list[Any]:
-    """Parse every event line in a data kind's log, oldest first."""
-    path = event_log(kind)
+def read_event(path: Path) -> list[dict[str, object]]:
+    """Parse one JSONL event log, validating config hash."""
     if not path.exists():
         return []
-    events = [json.loads(line) for line in path.read_text().splitlines() if line]
+    events: list[dict[str, object]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ShobrError(f"{path}: invalid event log: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise ShobrError(f"{path}: event is not a mapping")
+        try:
+            event_config_hash(raw)
+        except ShobrError as exc:
+            raise ShobrError(f"{path}: {exc}") from exc
+        events.append(raw)
+    return events
+
+
+def read_events(kind: DataKind, data_home: Path | None = None) -> list[Any]:
+    """Parse every event line in a data kind's log, oldest first."""
+    path = data_home / kind.value / "events.jsonl" if data_home is not None else event_log(kind)
+    if not path.exists():
+        return []
+    events = read_event(path)
     assert events, f"empty {path}"
     return events
 
@@ -140,7 +165,9 @@ def shobr_command(command: str) -> str:
 
 
 def require_events(kind: DataKind) -> None:
-    """Raise ShobrError unless the data kind's event log exists."""
+    """Raise ShobrError unless the data kind's stage event log exists."""
+    if kind is DataKind.CONFIG:
+        raise ValueError("require_events does not apply to DataKind.CONFIG")
     suggested_commands = {
         DataKind.NOTIFICATIONS: "notifications",
         DataKind.DISCOVERY: "discover",
@@ -178,8 +205,25 @@ def clear_projection_cache() -> None:
         clear()
 
 
+def event_config_hash(event: dict[str, object]) -> str:
+    """Return an event's mandatory config hash, raising when missing."""
+    value = event.get("config_hash")
+    if not isinstance(value, str) or not value:
+        raise ShobrError("event is missing config_hash")
+    return value
+
+
 def persist_event[T](kind: DataKind, event: object, project: Callable[[], T]) -> T:
     """Append one event to the log, reproject, and write the store."""
+    if kind is DataKind.CONFIG:
+        raise ShobrError("config events are not written directly")
+    if not isinstance(event, dict):
+        raise ShobrError("event is not a mapping")
+    from .config import ensure_config_event
+
+    if "config_hash" not in event:
+        event["config_hash"] = ensure_config_event()
+    event_config_hash(event)
     events = event_log(kind)
     events.parent.mkdir(parents=True, exist_ok=True)
     with events.open("a", encoding="utf-8") as fh:

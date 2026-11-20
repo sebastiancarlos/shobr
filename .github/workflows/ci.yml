@@ -87,7 +87,7 @@ jobs:
           key: roffume-v0.1.0
 
       - name: Install project and dev dependencies
-        run: uv sync --locked --extra dev
+        run: uv sync --locked --extra dev --extra charts
 
       - name: Lint
         run: uv run ruff check src test.py

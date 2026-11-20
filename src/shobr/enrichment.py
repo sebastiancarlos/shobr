@@ -112,13 +112,17 @@ class EnrichedStore(TypedDict):
     rows: dict[str, EnrichedRow]  # keyed by provider/posting_id
 
 
-def _reject_enriched(
-    key: str,
+def enrichment_rejection_reason(
     row: EnrichmentEvent,
     apps_by_company: dict[str, dict[str, str]],
     filters: Config,
 ) -> str | None:
-    """Return a rejection reason if the job fails the post-enrichment pre-filter."""
+    """Return a rejection reason if the job fails the post-enrichment pre-filter.
+
+    This is the shared enrichment decision used by the current projection and
+    by historical replays. The caller supplies the as-of application map.
+    """
+    key = store_key(row["provider"], row["posting_id"])
     reason = base_reject_reason(
         row["location"],
         row["location_type"],
@@ -164,7 +168,7 @@ def project_enrichment(provider: str | None = None) -> EnrichedStore:
     apps_by_company = applications_by_company(companies) if cooldown_days > 0 else {}
     projected: dict[str, EnrichedRow] = {}
     for key, row in latest.items():
-        rejected_reason = _reject_enriched(key, row, apps_by_company, filters)
+        rejected_reason = enrichment_rejection_reason(row, apps_by_company, filters)
         projected[key] = cast(
             EnrichedRow,
             {

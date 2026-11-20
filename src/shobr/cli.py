@@ -1,8 +1,10 @@
 """The shobr CLI: argument parsing and entry point."""
 
 import argparse
+import json
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from .ai import smoke_test_completion
 from .browser import commands_install, smoke_test_browser
@@ -36,6 +38,7 @@ from .tracking import (
     review_posting_id,
     track_posting_id,
 )
+from .viz.data import RANGE_CHOICES
 
 
 def _print_prompt_arg(
@@ -289,6 +292,35 @@ def main() -> None:
     _json_arg(status_parser)
     _provider_arg(status_parser)
 
+    progress_parser = sub.add_parser(
+        "progress",
+        help="render progress charts from the event logs (PNG rendering needs the charts extra)",
+    )
+    progress_parser.add_argument(
+        "--range",
+        dest="ranges",
+        action="append",
+        metavar="RANGE",
+        help=(f"range to render: {', '.join(RANGE_CHOICES)} (repeatable; default: week)"),
+    )
+    progress_output = progress_parser.add_mutually_exclusive_group()
+    progress_output.add_argument(
+        "--out",
+        type=Path,
+        help="output directory (default: /tmp/shobr)",
+    )
+    progress_output.add_argument(
+        "--json",
+        action="store_true",
+        help="print the chart data as JSON instead of rendering",
+    )
+    progress_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="do not open the generated image",
+    )
+    _provider_arg(progress_parser)
+
     next_parser = sub.add_parser(
         "next",
         help="prompt for the single next pipeline action and run it on confirmation",
@@ -314,6 +346,26 @@ def setup() -> None:
     """Scaffold profile/config and install beachpatrol commands."""
     init_profile()
     commands_install()
+
+
+def _render_progress(args: argparse.Namespace) -> None:
+    """Render progress charts, or print their data as JSON."""
+    from .viz.data import progress_specs
+
+    if args.json:
+        specs = progress_specs(args.ranges)
+        payload = {"charts": [spec.to_json() for spec in specs]}
+        print(json.dumps(payload, indent=2))
+        return
+    try:
+        from .viz.render import render_progress
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.split(".", 1)[0] == "matplotlib":
+            raise ShobrError(
+                "progress charts require the optional charts extra; run `uv sync --extra charts`"
+            ) from None
+        raise
+    render_progress(args.ranges, args.out, open_image=not args.no_open)
 
 
 def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
@@ -346,6 +398,7 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         "show": lambda: show_posting(args.posting_id, json_output=args.json),
         "review-next": review_next,
         "status": lambda: print_status(json_output=args.json),
+        "progress": lambda: _render_progress(args),
         "next": lambda: next_posting_id(args.posting_id) if args.posting_id else run_next(),
     }
     match commands.get(args.command):

@@ -2,6 +2,7 @@
 """End-to-end test suite for shobr."""
 
 import fcntl
+import hashlib
 import http.server
 import json
 import os
@@ -16,10 +17,12 @@ import tempfile
 import termios
 import threading
 import time
+import tomllib
 import unittest
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from shobr.browser import BEACHPATROL_COMMANDS_LOCAL_DIR
 from shobr.core import get_template
@@ -786,9 +789,61 @@ def seed_test_cv(data_home: TestDataHome) -> dict[str, str]:
 
 def _append_event(path: Path, event: dict) -> None:
     """Append one JSON event line, creating parent dirs as needed."""
+    event.setdefault("config_hash", "test")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(event) + "\n")
+
+
+def _seed_config_event(
+    data_home: TestDataHome,
+    config_text: str,
+    recorded_at: str,
+) -> str:
+    """Append one config event and return its content hash."""
+    raw = tomllib.loads(config_text)
+    canonical = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    digest = hashlib.sha256(canonical).hexdigest()
+    _append_event(
+        data_home.shobr_data / "config" / "events.jsonl",
+        {
+            "recorded_at": recorded_at,
+            "config_hash": digest,
+            "config": raw,
+        },
+    )
+    return digest
+
+
+def _read_event_log(path: Path) -> list[dict]:
+    """Parse one JSONL event log from a test data home."""
+    if not path.exists():
+        return []
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+
+
+def _write_event_log(path: Path, events: list[dict]) -> None:
+    """Rewrite one JSONL event log from test events."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+
+def _stamp_config_hash(path: Path, config_hash: str) -> None:
+    """Rewrite one event log so every event carries `config_hash`."""
+    events = _read_event_log(path)
+    for event in events:
+        event["config_hash"] = config_hash
+    _write_event_log(path, events)
 
 
 def seed_human_review(
@@ -822,6 +877,7 @@ def seed_tracking(
                 "provider": "linkedin",
                 "status": status,
                 "note": None,
+                "config_hash": "test",
             }
         )
         + "\n"
@@ -843,6 +899,7 @@ def seed_tailored_package(data_home: TestDataHome, posting_id: str = "5550000001
                 "rewrites": 0,
                 "resume_md": "seeded resume",
                 "cover_md": "seeded cover",
+                "config_hash": "test",
             }
         )
         + "\n"
@@ -2039,6 +2096,7 @@ class TestCLI(unittest.TestCase):
                                 "location": "Testville",
                             }
                         ],
+                        "config_hash": "test",
                     }
                 )
                 + "\n"
@@ -2813,6 +2871,7 @@ print("ok")
                                 "location": "Testville",
                             }
                         ],
+                        "config_hash": "test",
                     }
                 )
                 + "\n"
@@ -3421,6 +3480,7 @@ print("ok")
                             "kind": "ai_review",
                             "score": 4,
                             "reasoning": "fake ai review",
+                            "config_hash": "test",
                         }
                     )
                     + "\n"
@@ -3460,6 +3520,7 @@ print("ok")
                             "kind": "ai_review",
                             "score": 4,
                             "reasoning": "fake ai review",
+                            "config_hash": "test",
                         }
                     )
                     + "\n"
@@ -5568,6 +5629,7 @@ print("ok")
                         "kind": "ai_review",
                         "score": 4,
                         "reasoning": "fake llm says good fit",
+                        "config_hash": "test",
                     }
                 )
                 + "\n"
@@ -5920,6 +5982,7 @@ print("ok")
                             "kind": "ai_review",
                             "score": 4,
                             "reasoning": "fake ai review",
+                            "config_hash": "test",
                         }
                     )
                     + "\n"
@@ -6561,6 +6624,7 @@ print("ok")
                             "kind": "ai_review",
                             "score": 4,
                             "reasoning": "fake ai review",
+                            "config_hash": "test",
                         }
                     )
                     + "\n"
@@ -6766,6 +6830,729 @@ print("ok")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("Scored 2/2 leads.", result.stdout)
                 self.assertLess(result.stdout.index("FreshCo"), result.stdout.index("StaleCo"))
+
+
+class TestProgress(unittest.TestCase):
+    """End-to-end progress charts and config history."""
+
+    def test_config_events_record_only_changes(self) -> None:
+        """Config events are written once per distinct config and stamp events."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_provider_discovery(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=now,
+            )
+            seed_provider_enrichment(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=now,
+            )
+
+            first = shobr(
+                "screen",
+                "1111111111",
+                "4",
+                "--reason",
+                "good fit",
+                env=data_home.env,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            config_path = data_home.shobr_data / "config" / "events.jsonl"
+            config_events = _read_event_log(config_path)
+            self.assertEqual(len(config_events), 1)
+            self.assertEqual(config_events[0]["config"], tomllib.loads(CONFIG_DEFAULT))
+            first_hash = config_events[0]["config_hash"]
+            screening_events = _read_event_log(data_home.shobr_data / "screening" / "events.jsonl")
+            self.assertEqual(screening_events[-1]["config_hash"], first_hash)
+
+            same = shobr(
+                "screen",
+                "1111111111",
+                "4",
+                "--reason",
+                "still good",
+                env=data_home.env,
+            )
+            self.assertEqual(same.returncode, 0, same.stderr)
+            self.assertEqual(len(_read_event_log(config_path)), 1)
+
+            changed_config = CONFIG_DEFAULT.replace(
+                "# auto_skip_llm_max = 1",
+                "auto_skip_llm_max = 4",
+            )
+            seed_test_config(data_home, changed_config)
+            changed = shobr(
+                "screen",
+                "1111111111",
+                "4",
+                "--reason",
+                "new rules",
+                env=data_home.env,
+            )
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            config_events = _read_event_log(config_path)
+            self.assertEqual(len(config_events), 2)
+            self.assertNotEqual(config_events[0]["config_hash"], config_events[1]["config_hash"])
+            self.assertEqual(config_events[1]["config"], tomllib.loads(changed_config))
+
+    def test_ensure_config_event_validates_provider_overrides(self) -> None:
+        """A bad provider override is rejected before the config event is written."""
+        from unittest import mock
+
+        from shobr import config as config_module
+
+        with TestDataHome() as data_home:
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT + "\n[providers.linkedin]\nauto_skip_llm_max = 9\n",
+            )
+            config_path = data_home.shobr_config / "config.toml"
+            events_path = data_home.shobr_data / "config" / "events.jsonl"
+            with (
+                mock.patch.object(config_module, "CONFIG_PATH", config_path),
+                mock.patch.object(config_module, "event_log", return_value=events_path),
+            ):
+                config_module._raw_config.cache_clear()
+                config_module._load_config.cache_clear()
+                config_module.load_provider_config.cache_clear()
+                with self.assertRaisesRegex(config_module.ShobrError, "auto_skip_llm_max"):
+                    config_module.ensure_config_event()
+                self.assertFalse(events_path.exists())
+            config_module._raw_config.cache_clear()
+            config_module._load_config.cache_clear()
+            config_module.load_provider_config.cache_clear()
+
+    def test_progress_json_replays_config_history(self) -> None:
+        """A config change moves the pending backlog on the rendered chart."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_provider_discovery(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                title="Test Engineer",
+                company="EngineerCo",
+                fetched_at=now,
+            )
+            seed_provider_enrichment(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                title="Test Engineer",
+                company="EngineerCo",
+                fetched_at=now,
+            )
+            seed_provider_discovery(
+                data_home,
+                DEFAULT_PROVIDER,
+                "2222222222",
+                title="Test Manager",
+                company="ManagerCo",
+                fetched_at=now,
+            )
+            seed_provider_enrichment(
+                data_home,
+                DEFAULT_PROVIDER,
+                "2222222222",
+                title="Test Manager",
+                company="ManagerCo",
+                fetched_at=now,
+            )
+
+            first = shobr(
+                "screen",
+                "2222222222",
+                "5",
+                "--reason",
+                "strong fit",
+                env=data_home.env,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            config_path = data_home.shobr_data / "config" / "events.jsonl"
+            config_events = _read_event_log(config_path)
+            self.assertEqual(len(config_events), 1)
+            first_hash = config_events[0]["config_hash"]
+            _stamp_config_hash(
+                data_home.shobr_data / "discovery" / "events.jsonl",
+                first_hash,
+            )
+            _stamp_config_hash(
+                data_home.shobr_data / "enrichment" / "events.jsonl",
+                first_hash,
+            )
+
+            _cross_second_boundary()
+            changed_config = CONFIG_DEFAULT.replace(
+                'golang = "\\\\bgolang\\\\b"',
+                'golang = "\\\\bgolang\\\\b"\nengineer = "\\\\bengineer\\\\b"',
+            )
+            seed_test_config(data_home, changed_config)
+            second = shobr(
+                "screen",
+                "2222222222",
+                "5",
+                "--reason",
+                "strong fit again",
+                env=data_home.env,
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            config_events = _read_event_log(config_path)
+            self.assertEqual(len(config_events), 2)
+            self.assertNotEqual(config_events[0]["config_hash"], config_events[1]["config_hash"])
+
+            result = shobr(
+                "progress",
+                "--json",
+                env={**data_home.env, "TZ": "Europe/Athens"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(set(payload), {"charts"})
+            charts = payload["charts"]
+            self.assertEqual(len(charts), 1)
+            chart = charts[0]
+            self.assertEqual(chart["provider"], DEFAULT_PROVIDER)
+            self.assertEqual(chart["range_key"], "week")
+            pending = chart["series"]["pending"]
+            local_zone = ZoneInfo("Europe/Athens")
+            config_changed_at = (
+                datetime.fromisoformat(config_events[1]["recorded_at"])
+                .astimezone(local_zone)
+                .replace(tzinfo=None)
+                .isoformat()
+            )
+            utc_config_changed_at = (
+                datetime.fromisoformat(config_events[1]["recorded_at"])
+                .astimezone(UTC)
+                .replace(tzinfo=None)
+                .isoformat()
+            )
+            self.assertNotIn(utc_config_changed_at, pending["x"])
+            index = pending["x"].index(config_changed_at)
+            self.assertEqual(pending["y"][index - 1], 2)
+            self.assertEqual(pending["y"][index], 1)
+            self.assertEqual(pending["y"][-1], 1)
+
+    def test_progress_passing_lines_follow_config_changes(self) -> None:
+        """A config change moves passing counts without a new stage event."""
+        with TestDataHome() as data_home:
+            now = datetime.now(UTC).replace(microsecond=0)
+            base = datetime.combine(now.date(), datetime.min.time(), tzinfo=UTC)
+            first_at = base + timedelta(seconds=1)
+            reject_at = base + timedelta(seconds=2)
+            restore_at = base + timedelta(seconds=3)
+            first_local = first_at.replace(tzinfo=None).isoformat()
+            reject_local = reject_at.replace(tzinfo=None).isoformat()
+            restore_local = restore_at.replace(tzinfo=None).isoformat()
+            rejecting_config = CONFIG_DEFAULT.replace(
+                'golang = "\\\\bgolang\\\\b"',
+                'golang = "\\\\bgolang\\\\b"\nengineer = "\\\\bengineer\\\\b"',
+            )
+            first_hash = _seed_config_event(
+                data_home,
+                CONFIG_DEFAULT,
+                first_at.isoformat(),
+            )
+            _seed_config_event(data_home, rejecting_config, reject_at.isoformat())
+            _seed_config_event(data_home, CONFIG_DEFAULT, restore_at.isoformat())
+            seed_provider_discovery(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                title="Test Engineer",
+                fetched_at=first_at.isoformat(),
+            )
+            seed_provider_enrichment(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                title="Test Engineer",
+                fetched_at=first_at.isoformat(),
+            )
+            seed_provider_screening(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                score=4,
+                scored_at=first_at.isoformat(),
+            )
+            for kind in ("discovery", "enrichment", "screening"):
+                _stamp_config_hash(
+                    data_home.shobr_data / kind / "events.jsonl",
+                    first_hash,
+                )
+            seed_test_config(data_home)
+
+            result = shobr(
+                "progress",
+                "--json",
+                "--range",
+                "week",
+                "--range",
+                "month",
+                env={**data_home.env, "TZ": "UTC"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            charts = json.loads(result.stdout)["charts"]
+            chart = charts[0]
+            for key in ("discovered_passing", "enriched_passing"):
+                series = chart["series"][key]
+                self.assertEqual(series["total"], 1)
+                passing = series["x"].index(first_local)
+                rejected = series["x"].index(reject_local)
+                restored = series["x"].index(restore_local)
+                self.assertEqual(series["y"][passing], 1)
+                self.assertEqual(series["y"][rejected], 0)
+                self.assertEqual(series["y"][restored], 1)
+            screened = chart["series"]["screened_passing"]
+            self.assertEqual(screened["total"], 1)
+            for stamp in (first_local, reject_local, restore_local):
+                self.assertEqual(screened["y"][screened["x"].index(stamp)], 1)
+
+            month = charts[1]
+            for key in ("discovered_passing", "enriched_passing", "screened_passing"):
+                series = month["series"][key]
+                self.assertNotIn(first_local, series["x"])
+                self.assertTrue(
+                    all(stamp.endswith("T00:00:00") for stamp in series["x"]),
+                    series["x"],
+                )
+
+    def test_progress_replays_cross_provider_cooldown(self) -> None:
+        """A same-company application on another board rejects the lead."""
+        with TestDataHome() as data_home:
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT.replace(
+                    "# reject_recent_application_days = 90",
+                    "reject_recent_application_days = 90",
+                ),
+            )
+            env = fake_provider_env(data_home, {"alpha": {}, "beta": {}})
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            for provider, posting_id in (("alpha", "A1"), ("beta", "B1")):
+                seed_provider_discovery(
+                    data_home,
+                    provider,
+                    posting_id,
+                    company="SharedCo",
+                    fetched_at=now,
+                )
+                seed_provider_enrichment(
+                    data_home,
+                    provider,
+                    posting_id,
+                    company="SharedCo",
+                    fetched_at=now,
+                )
+
+            screened = shobr(
+                "--provider",
+                "alpha",
+                "screen",
+                "A1",
+                "4",
+                "--reason",
+                "good fit",
+                env=env,
+            )
+            self.assertEqual(screened.returncode, 0, screened.stderr)
+            config_events = _read_event_log(data_home.shobr_data / "config" / "events.jsonl")
+            self.assertEqual(len(config_events), 1)
+            config_hash = config_events[0]["config_hash"]
+            for kind in ("discovery", "enrichment", "screening"):
+                _stamp_config_hash(data_home.shobr_data / kind / "events.jsonl", config_hash)
+
+            _cross_second_boundary()
+            tracked_at = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_provider_tracking(data_home, "beta", "B1", tracked_at=tracked_at)
+            _stamp_config_hash(
+                data_home.shobr_data / "tracking" / "events.jsonl",
+                config_hash,
+            )
+
+            result = shobr(
+                "--provider",
+                "alpha",
+                "progress",
+                "--json",
+                env={**env, "TZ": "Europe/Athens"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            chart = json.loads(result.stdout)["charts"][0]
+            pending = chart["series"]["pending"]
+            tracked_local = (
+                datetime.fromisoformat(tracked_at)
+                .astimezone(ZoneInfo("Europe/Athens"))
+                .replace(tzinfo=None)
+                .isoformat()
+            )
+            index = pending["x"].index(tracked_local)
+            self.assertEqual(pending["y"][index - 1], 1)
+            self.assertEqual(pending["y"][index], 0)
+            self.assertEqual(pending["y"][-1], 0)
+            for key in ("discovered_passing", "enriched_passing"):
+                series = chart["series"][key]
+                index = series["x"].index(tracked_local)
+                self.assertEqual(series["y"][index - 1], 1)
+                self.assertEqual(series["y"][index], 0)
+
+    def test_progress_replays_provider_config_overrides(self) -> None:
+        """Historical replay applies the charting provider's config override."""
+        with TestDataHome() as data_home:
+            seed_test_config(
+                data_home,
+                CONFIG_DEFAULT + "\n[providers.alpha]\nreject_title = {}\n",
+            )
+            env = fake_provider_env(data_home, {"alpha": {}})
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_provider_discovery(
+                data_home,
+                "alpha",
+                "A1",
+                title="Golang Engineer",
+                company="Acme",
+                fetched_at=now,
+            )
+            seed_provider_enrichment(
+                data_home,
+                "alpha",
+                "A1",
+                title="Golang Engineer",
+                company="Acme",
+                fetched_at=now,
+            )
+            screened = shobr(
+                "--provider",
+                "alpha",
+                "screen",
+                "A1",
+                "5",
+                "--reason",
+                "good fit",
+                env=env,
+            )
+            self.assertEqual(screened.returncode, 0, screened.stderr)
+            config_events = _read_event_log(data_home.shobr_data / "config" / "events.jsonl")
+            self.assertEqual(len(config_events), 1)
+            config_hash = config_events[0]["config_hash"]
+            for kind in ("discovery", "enrichment"):
+                _stamp_config_hash(data_home.shobr_data / kind / "events.jsonl", config_hash)
+
+            result = shobr(
+                "--provider",
+                "alpha",
+                "progress",
+                "--json",
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            chart = json.loads(result.stdout)["charts"][0]
+            self.assertEqual(chart["series"]["pending"]["y"][-1], 1)
+
+    def test_progress_last_week_excludes_end_boundary(self) -> None:
+        """An event at the exclusive window end stays out of the cumulative series."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            zone = ZoneInfo("Europe/Athens")
+            today = datetime.now(zone).date()
+            monday = today - timedelta(days=today.weekday())
+            end_utc = datetime.combine(monday, datetime.min.time(), tzinfo=zone).astimezone(UTC)
+            fetched_at = end_utc.isoformat(timespec="seconds")
+            seed_provider_discovery(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=fetched_at,
+            )
+            seed_provider_enrichment(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=fetched_at,
+            )
+            screened = shobr(
+                "screen",
+                "1111111111",
+                "4",
+                "--reason",
+                "good fit",
+                "--force",
+                env={**data_home.env, "TZ": "Europe/Athens"},
+            )
+            self.assertEqual(screened.returncode, 0, screened.stderr)
+            config_events = _read_event_log(data_home.shobr_data / "config" / "events.jsonl")
+            self.assertEqual(len(config_events), 1)
+            config_hash = config_events[0]["config_hash"]
+            for kind in ("discovery", "enrichment", "screening"):
+                _stamp_config_hash(data_home.shobr_data / kind / "events.jsonl", config_hash)
+
+            result = shobr(
+                "progress",
+                "--range",
+                "last-week",
+                "--json",
+                env={**data_home.env, "TZ": "Europe/Athens"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            chart = json.loads(result.stdout)["charts"][0]
+            self.assertEqual(chart["series"]["discovered"]["y"][-1], 0)
+
+    def test_progress_last_month_excludes_end_boundary(self) -> None:
+        """An event at the first of this month stays out of last-month."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            zone = ZoneInfo("Europe/Athens")
+            today = datetime.now(zone).date()
+            month_start = today.replace(day=1)
+            end_utc = datetime.combine(month_start, datetime.min.time(), tzinfo=zone).astimezone(
+                UTC
+            )
+            fetched_at = end_utc.isoformat(timespec="seconds")
+            seed_provider_discovery(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=fetched_at,
+            )
+            seed_provider_enrichment(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=fetched_at,
+            )
+            screened = shobr(
+                "screen",
+                "1111111111",
+                "4",
+                "--reason",
+                "good fit",
+                "--force",
+                env={**data_home.env, "TZ": "Europe/Athens"},
+            )
+            self.assertEqual(screened.returncode, 0, screened.stderr)
+            config_events = _read_event_log(data_home.shobr_data / "config" / "events.jsonl")
+            self.assertEqual(len(config_events), 1)
+            config_hash = config_events[0]["config_hash"]
+            for kind in ("discovery", "enrichment", "screening"):
+                _stamp_config_hash(data_home.shobr_data / kind / "events.jsonl", config_hash)
+
+            result = shobr(
+                "progress",
+                "--range",
+                "last-month",
+                "--json",
+                env={**data_home.env, "TZ": "Europe/Athens"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            chart = json.loads(result.stdout)["charts"][0]
+            previous_month_end = month_start - timedelta(days=1)
+            previous_month_start = previous_month_end.replace(day=1)
+            self.assertEqual(chart["range_key"], "last-month")
+            self.assertEqual(chart["start"], f"{previous_month_start}T00:00:00")
+            self.assertEqual(chart["end"], f"{month_start}T00:00:00")
+            self.assertEqual(chart["series"]["discovered"]["y"][-1], 0)
+
+    def test_progress_supports_month_and_long_ranges(self) -> None:
+        """month, 6months, and year all build chart specs."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_provider_discovery(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=now,
+            )
+            seed_provider_enrichment(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=now,
+            )
+            screened = shobr(
+                "screen",
+                "1111111111",
+                "4",
+                "--reason",
+                "good fit",
+                env=data_home.env,
+            )
+            self.assertEqual(screened.returncode, 0, screened.stderr)
+            config_events = _read_event_log(data_home.shobr_data / "config" / "events.jsonl")
+            config_hash = config_events[0]["config_hash"]
+            for kind in ("discovery", "enrichment"):
+                _stamp_config_hash(data_home.shobr_data / kind / "events.jsonl", config_hash)
+
+            result = shobr(
+                "progress",
+                "--range",
+                "month",
+                "--range",
+                "6months",
+                "--range",
+                "year",
+                "--json",
+                env={**data_home.env, "TZ": "Europe/Athens"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            charts = json.loads(result.stdout)["charts"]
+            self.assertEqual(
+                [chart["range_key"] for chart in charts],
+                ["month", "6months", "year"],
+            )
+            for chart in charts:
+                self.assertEqual(chart["series"]["discovered"]["y"][-1], 1)
+                self.assertEqual(chart["series"]["pending"]["y"][-1], 1)
+
+    def test_progress_reports_no_events(self) -> None:
+        """progress reports an empty event history without an abrupt exit."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            result = shobr("progress", "--json", env=data_home.env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("no events found for provider", result.stderr)
+            self.assertIn("run `shobr discover` first", result.stderr)
+
+    def test_progress_opens_image_and_no_open(self) -> None:
+        """progress opens the PNG by default and --no-open suppresses it."""
+        with TestDataHome() as data_home:
+            seed_test_config(data_home)
+            now = datetime.now(UTC).isoformat(timespec="seconds")
+            seed_provider_discovery(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=now,
+            )
+            seed_provider_enrichment(
+                data_home,
+                DEFAULT_PROVIDER,
+                "1111111111",
+                fetched_at=now,
+            )
+            result = shobr(
+                "screen",
+                "1111111111",
+                "4",
+                "--reason",
+                "good fit",
+                env=data_home.env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config_events = _read_event_log(data_home.shobr_data / "config" / "events.jsonl")
+            config_hash = config_events[0]["config_hash"]
+            _stamp_config_hash(
+                data_home.shobr_data / "discovery" / "events.jsonl",
+                config_hash,
+            )
+            _stamp_config_hash(
+                data_home.shobr_data / "enrichment" / "events.jsonl",
+                config_hash,
+            )
+
+            stub = data_home.path / "bin"
+            stub.mkdir()
+            log = data_home.path / "opened.txt"
+            for command in ("xdg-open", "open"):
+                path = stub / command
+                path.write_text(
+                    '#!/bin/sh\nprintf "%s" "$1" > "$SHOBR_OPEN_LOG"\n',
+                    encoding="utf-8",
+                )
+                path.chmod(0o755)
+            env = {
+                **data_home.env,
+                "PATH": f"{stub}:{data_home.env['PATH']}",
+                "SHOBR_OPEN_LOG": str(log),
+            }
+            env.pop("CI", None)
+            out_dir = data_home.path / "charts"
+            opened = shobr("progress", "--out", str(out_dir), env=env)
+            self.assertEqual(opened.returncode, 0, opened.stderr)
+            prefix = f"{DEFAULT_PROVIDER} week: "
+            self.assertTrue(opened.stdout.startswith(prefix), opened.stdout)
+            png = Path(opened.stdout.removeprefix(prefix).strip())
+            self.assertTrue(png.is_file())
+            deadline = time.monotonic() + 5
+            while not log.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(log.read_text(encoding="utf-8"), str(png))
+
+            log.unlink()
+            png.write_bytes(b"sentinel")
+            quiet = shobr(
+                "progress",
+                "--out",
+                str(out_dir),
+                "--no-open",
+                env=env,
+            )
+            self.assertEqual(quiet.returncode, 0, quiet.stderr)
+            self.assertFalse(log.exists())
+            self.assertNotEqual(png.read_bytes(), b"sentinel")
+
+            ci = shobr("progress", "--out", str(out_dir), env={**env, "CI": "1"})
+            self.assertEqual(ci.returncode, 0, ci.stderr)
+            self.assertFalse(log.exists())
+
+    def test_progress_rejects_unknown_range(self) -> None:
+        """An unknown range fails before reading any event data."""
+        with TestDataHome() as data_home:
+            result = shobr(
+                "progress",
+                "--range",
+                "fortnight",
+                "--json",
+                env=data_home.env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unknown range 'fortnight'", result.stderr)
+            self.assertIn("week, last-week, month, last-month, 6months, year", result.stderr)
+
+    def test_progress_default_output_dir(self) -> None:
+        """The CLI default output directory is /tmp/shobr."""
+        result = shobr("progress", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("default: /tmp/shobr", result.stdout)
+
+        from shobr.viz.render import default_out_dir
+
+        self.assertEqual(default_out_dir(), Path("/tmp/shobr"))
+
+    def test_config_data_kind_has_no_stage_or_projection(self) -> None:
+        """Config history is not a stage and has no projection store."""
+        from shobr.core import DataKind, ShobrError, require_events, store_path
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "require_events does not apply to DataKind.CONFIG",
+        ):
+            require_events(DataKind.CONFIG)
+        with self.assertRaisesRegex(ShobrError, "config history has no projection store"):
+            store_path(DataKind.CONFIG)
+
+    def test_progress_rejects_data_without_config_history(self) -> None:
+        """progress refuses missing config hashes and missing config events."""
+        with TestDataHome() as data_home:
+            seed_minimal_lead(data_home)
+            result = shobr("progress", "--json", env=data_home.env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("config hash test is missing from config/events.jsonl", result.stderr)
+
+            discovery_path = data_home.shobr_data / "discovery" / "events.jsonl"
+            events = _read_event_log(discovery_path)
+            events[0].pop("config_hash")
+            _write_event_log(discovery_path, events)
+            result = shobr("progress", "--json", env=data_home.env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing config_hash", result.stderr)
 
 
 class TestProviderCLI(unittest.TestCase):
@@ -7565,7 +8352,7 @@ def _test_method_names() -> list[str]:
     """Every test id in unittest's default (alphabetical) order."""
     return sorted(
         f"{cls.__name__}.{name}"
-        for cls in (TestCLI, TestProviderCLI)
+        for cls in (TestCLI, TestProgress, TestProviderCLI)
         for name in dir(cls)
         if name.startswith("test_")
     )

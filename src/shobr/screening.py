@@ -302,13 +302,17 @@ def _auto_skip_max(provider: str) -> int:
     return load_provider_config(provider)["auto_skip_llm_max"]
 
 
-def _screening_decision(human: _HumanReview | None, ai: _AIReview | None) -> ReviewDecision:
-    """Derive a posting's screening decision from its reviews."""
-    if human is None:
-        if ai is not None and ai["score"] <= _auto_skip_max(ai["provider"]):
+def screening_decision(
+    human_score: int | None,
+    ai_score: int | None,
+    auto_skip_max: int,
+) -> ReviewDecision:
+    """Derive a screening decision from scores and the auto-skip ceiling."""
+    if human_score is None:
+        if ai_score is not None and ai_score <= auto_skip_max:
             return ReviewDecision.SKIP
         return ReviewDecision.PENDING
-    if human["score"] >= _HUMAN_PURSUE_MIN:
+    if human_score >= _HUMAN_PURSUE_MIN:
         return ReviewDecision.PURSUE
     return ReviewDecision.SKIP
 
@@ -347,12 +351,18 @@ def project_screening(provider: str | None = None) -> _ScreenedStore:
         a = ai.get(key)
         review = h if h is not None else a
         assert review is not None, "key came from human or ai"
+        human_score = int(h["score"]) if h is not None else None
+        ai_score = int(a["score"]) if a is not None else None
         rows[key] = ScreeningRow(
             posting_id=review["posting_id"],
             provider=review["provider"],
             human=h,
             ai=a,
-            decision=_screening_decision(h, a),
+            decision=screening_decision(
+                human_score,
+                ai_score,
+                _auto_skip_max(review["provider"]),
+            ),
         )
     return {"screened_at": events[-1]["scored_at"], "rows": rows}
 
